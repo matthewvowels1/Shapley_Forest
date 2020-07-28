@@ -49,7 +49,7 @@ allow you to set the number of folds.
 od = '/home/matthewvowels/GitHub/Psych_ML/Shapley_Forest/output'
 shap_env = RFShap(model_dir=None, exclude_vars=['gay', 'lesbian'], outcome_var='age',
                   output_dir=od, random_seed=42, class_='RF',type_='reg', balanced='balanced', trn_tst_split=0.6,
-                    k_cv='all', k=5)
+                    k_cv='split', k=5)
 ```
 
 
@@ -191,7 +191,7 @@ The class includes a function to calculate shap_vals for samples (with replaceme
 
 Here retrain allows you to specify whether you want to retrain your model for every bootstrap. Obviously this is very
 computationally expensive, particularly when you have `shap_env.k_cv = 'loo_cv'` so it is recommended, if you DO 
-want to retrain, to have `shap_env.k_cv = 'all'`
+want to retrain, to have `shap_env.k_cv = 'split'`
 
 The output provides means and standard errors, as well as the full list of shap_vals over all bootstraps.
 

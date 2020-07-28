@@ -31,13 +31,13 @@ class RFShap(object):
         :param type_:  either 'reg' or 'cls' for regression or classification
         :param balanced:  either 'balanced' or 'unbalanced' for imblearn or sklearn respectively
         :param k_cv: uses k_fold training across entire dataset (but does not allow hyperparam tuning).
-        :param k: if k_cv='loo_cv', 'all', 'k_fold'
+        :param k: if k_cv='loo_cv', 'split', 'k_fold'
         '''
         assert class_ in ['RF', 'lin'], 'Class not recognised - choose reg or lin.'
         assert type_ in ['reg', 'cls'], 'Type not recognised - choose reg or cls.'
         assert balanced in ['balanced', None], 'Balanced must be balanced or unbalanced'
         assert outcome_var is not None, 'Pick an outcome variable!'
-        assert k_cv in ['loo_cv', 'k_fold', 'all'], "For k_cv Choose from 'loo_cv', 'k_fold', 'all'"
+        assert k_cv in ['loo_cv', 'k_fold', 'split'], "For k_cv Choose from 'loo_cv', 'k_fold', 'split'"
 
         self.model_dir = model_dir
         self.exclude_vars = exclude_vars
@@ -166,7 +166,7 @@ class RFShap(object):
         if self.k_cv == 'k_fold' or self.k_cv == 'loo_cv':
             report = self._train_eval_kloo(plot=plot)
 
-        elif self.k_cv == 'all':
+        elif self.k_cv == 'split':
             self.model.fit(self.X_train, self.y_train.values.ravel())
             report = self._eval_all()
         return self.model, report
@@ -405,7 +405,7 @@ class RFShap(object):
         '''
         print('Tuning the following parameters: ', tunable_params)
 
-        assert self.k_cv == 'all',\
+        assert self.k_cv == 'split',\
             'k_cv must be set to False to allow hyperparameter tuning with a designated training set!'
 
         if self.class_ == 'RF':
@@ -555,7 +555,7 @@ class RFShap(object):
             modell = self.model
         shap_vals_bootstraps = []
 
-        if self.k_cv == 'all':
+        if self.k_cv == 'split':
             X_test_bootstrap = self.X_test
         elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
             X_test_bootstrap = self.X

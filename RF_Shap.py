@@ -300,8 +300,7 @@ class RFShap(object):
                 i = 0
                 for train_index, test_index in kf.split(self.X):
                     i += 1
-                    if i % 10 == 0:
-                        print('Loo-cv split number: ', i)
+                    print('Loo-cv split number: ', i)
                     X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
                     y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
                     self.model = self.make_model(self.config)
@@ -370,8 +369,7 @@ class RFShap(object):
                 i = 0
                 for train_index, test_index in kf.split(self.X):
                     i += 1
-                    if i % 10 == 0:
-                        print('Loo-cv split number: ', i)
+                    print('Loo-cv split number: ', i)
                     X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
                     y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
                     self.model = self.make_model(self.config)
@@ -500,11 +498,10 @@ class RFShap(object):
                                'solver': solver,
                                'max_iter': max_iter,
                                }
-        print(random_grid)
+
         filtered = {k: v for k, v in random_grid.items() if v is not None}
         random_grid.clear()
         random_grid.update(filtered)
-        print(random_grid)
         rf = self.make_model(config=None)
         rf_random = RandomizedSearchCV(estimator=rf, param_distributions=random_grid, n_iter=n_iter, cv=folds, verbose=2,
                                        random_state=self.seed, n_jobs=-1)

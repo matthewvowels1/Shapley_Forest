@@ -8,10 +8,11 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import LinearRegression
 from imblearn.ensemble import BalancedRandomForestClassifier
+from scipy.stats import sem
 import matplotlib.pyplot as plt
 
-from sklearn.model_selection import GridSearchCV, cross_val_score, StratifiedKFold, learning_curve, train_test_split, \
-    RandomizedSearchCV
+
+from sklearn.model_selection import KFold, train_test_split, RandomizedSearchCV, LeaveOneOut
 import joblib
 
 
@@ -20,7 +21,7 @@ import joblib
 
 class RFShap(object):
     def __init__(self, model_dir=None, exclude_vars=None, outcome_var=None, output_dir=None, random_seed=42,
-                 class_='RF', type_='reg', balanced='balanced', trn_tst_split=0.6):
+                 class_='RF', type_='reg', balanced='balanced', trn_tst_split=0.6, k_cv='loo_cv', k=5):
 
         '''
         :param model_dir: this is for pre_trained model loading
@@ -31,11 +32,14 @@ class RFShap(object):
         :param class_: either 'RF' for random forest, or 'lin' for linear/logistic
         :param type_:  either 'reg' or 'cls' for regression or classification
         :param balanced:  either 'balanced' or 'unbalanced' for imblearn or sklearn respectively
+        :param k_cv: uses k_fold training across entire dataset (but does not allow hyperparam tuning).
+        :param k: if k_cv='loo_cv', 'all', 'k_fold'
         '''
         assert class_ in ['RF', 'lin'], 'Class not recognised - choose reg or lin.'
         assert type_ in ['reg', 'cls'], 'Type not recognised - choose reg or cls.'
         assert balanced in ['balanced', None], 'Balanced must be balanced or unbalanced'
         assert outcome_var is not None, 'Pick an outcome variable!'
+        assert k_cv in ['loo_cv', 'k_fold', 'all'], "For k_cv Choose from 'loo_cv', 'k_fold', 'all'"
 
         self.model_dir = model_dir
         self.exclude_vars = exclude_vars
@@ -46,6 +50,8 @@ class RFShap(object):
         self.type_ = type_
         self.balanced = balanced
         self.trn_tst_split = trn_tst_split
+        self.k_cv = k_cv
+        self.k = k
         self.dataset = None
         self.model = None
         self.X = None
@@ -54,6 +60,10 @@ class RFShap(object):
         self.y_test = None
         self.X_train = None
         self.y_train = None
+        self.config = None
+
+        if self.model_dir is not None:
+            self.model = self.load_model(model_dir_=self.model_dir)
 
     def munch(self, dataset):
         '''
@@ -62,7 +72,9 @@ class RFShap(object):
         '''
 
         print('Preparing dataset...')
-        self.dataset = dataset.drop(columns=self.exclude_vars)
+        self.dataset = dataset
+        if self.exclude_vars is not None:
+            self.dataset = dataset.drop(columns=self.exclude_vars)
         self.y = self.dataset[[self.outcome_var]]
         self.X = self.dataset.drop(columns=self.outcome_var)
 
@@ -70,11 +82,42 @@ class RFShap(object):
 
         return self.dataset,  self.X,  self.y, self.X_train, self.X_test, self.y_train, self.y_test
 
+    def load_model(self, model_dir_=None):
+        model_dir = model_dir_
+
+        if model_dir is None:
+            model_dir = self.model_dir
+        else:
+            self.model_dir = model_dir_
+
+        try:
+            self.model = joblib.load(model_dir)
+        except:
+            print('Either no model dir specified, or model dir is incorrect (i.e. no /.../model.sav found).')
+
+        return self.model
+
+    def save_model(self, model_dir_=None):
+
+        model_dir = model_dir_
+        if model_dir is None:
+            model_dir = self.model_dir
+        else:
+            self.model_dir = model_dir_
+        try:
+            joblib.dump(self.model, model_dir)
+        except:
+            print('Check model dir... had problems saving /.../model.sav.')
+
+
     def make_model(self, config=None):
         '''
         :param config : model parameters
         :return: self.model
         '''
+
+        if config != None:
+            self.config = config
 
         print('Creating fresh model...')
 
@@ -113,19 +156,24 @@ class RFShap(object):
                                                             test_size=self.trn_tst_split, random_state=self.seed)
         return X_train, X_test, y_train, y_test
 
-    def train_test(self):
+    def train_test(self, plot=False):
 
         '''
+        :param plot: whether to plot the auroc with k-fold training (default is false)
         :return: trained model and performance report
         '''
 
         assert self.model != None, 'model cannot be NoneType! Make sure it has been defined.'
+        report = None
+        if self.k_cv == 'k_fold' or self.k_cv == 'loo_cv':
+            report = self._train_eval_kloo(plot=plot)
 
-        self.model.fit(self.X_train, self.y_train)
-        report = self._eval()
+        elif self.k_cv == 'all':
+            self.model.fit(self.X_train, self.y_train.values.ravel())
+            report = self._eval_all()
         return self.model, report
 
-    def _eval(self):
+    def _eval_all(self):
 
         '''
         :return: performance report
@@ -137,12 +185,13 @@ class RFShap(object):
 
         if self.type_ == 'cls':
             print("Accuracy: %s%%" % (100 * metrics.accuracy_score(self.y_test, preds)))
-            conf_mat = np.asarray(metrics.confusion_matrix(self.y_test, preds))
-            np.savetxt(os.path.join(self.output_dir, 'simple_train_test_conf_mat.txt'), conf_mat)
+            conf_mat = np.asarray(metrics.confusion_matrix(self.y_test.values.ravel(), preds))
+            np.savetxt(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                    '_simple_test_conf_mat.txt'), conf_mat)
             report = metrics.classification_report(self.y_test, preds, output_dict=True)
             df_report = pd.DataFrame(report).transpose()
             df_report.to_csv(os.path.join(self.output_dir,  str(self.type_) + '_' + str(self.class_) +
-                                          '_simple_train_test_classification_report.csv'))
+                                          '_simple_test_classification_report.csv'))
 
         elif self.type_ == 'reg':
             expl_var = metrics.explained_variance_score(self.y_test, preds)
@@ -155,9 +204,201 @@ class RFShap(object):
             df_report = pd.DataFrame([expl_var, mae, mse, msle, med_ae, r2]).T
             df_report.columns = cols
             df_report.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                          '_simple_train_test_regression_report.csv'))
+                                          '_simple_test_regression_report.csv'))
 
         return df_report
+
+
+
+    def _train_eval_kloo(self, plot=False):
+        # adapted from https://scikit-learn.org/
+
+
+        if self.type_ == 'cls':
+            if self.k_cv == 'k_fold':
+                kf = KFold(n_splits=self.k)
+                test_accs = []
+                reports = []
+                tprs = []
+                aucs = []
+                tprs_2 = []
+                fprs = []
+                precisions = []
+                recalls = []
+                mean_fpr = np.linspace(0, 1, 100)
+                i = 0
+                f = 0
+                fig, ax = plt.subplots()
+                for train_index, test_index in kf.split(self.X):
+                    f += 1
+                    print('Training fold: ', f)
+                    X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
+                    y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+                    self.model = self.make_model(self.config)
+                    self.model.fit(X_train, y_train.values.ravel())
+                    preds = self.model.predict(X_test)
+                    probs = self.model.predict_proba(X_test)
+                    test_accs.append(100 * metrics.accuracy_score(y_test, preds))
+                    reports.append(metrics.classification_report(y_test, preds, output_dict=True))
+                    fpr, tpr, _ = metrics.roc_curve(y_test, probs[:,0])
+                    tprs_2.append(tpr)
+                    fprs.append(fpr)
+                    precisions.append(metrics.precision_score(y_test, preds, average=None))
+                    recalls.append(metrics.recall_score(y_test, preds, average=None))
+                    viz = metrics.plot_roc_curve(self.model, X_test, y_test,
+                                         name='ROC fold {}'.format(i),
+                                         alpha=0.3, lw=1, ax=ax)
+                    interp_tpr = np.interp(mean_fpr, viz.fpr, viz.tpr)
+                    interp_tpr[0] = 0.0
+                    tprs.append(interp_tpr)
+                    aucs.append(viz.roc_auc)
+                    i += 1
+
+                ax.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r',
+                        label='Chance', alpha=.8)
+
+                mean_tpr = np.mean(tprs, axis=0)
+                mean_tpr[-1] = 1.0
+                mean_auc = metrics.auc(mean_fpr, mean_tpr)
+                std_auc = np.std(aucs)
+                ax.plot(mean_fpr, mean_tpr, color='b',
+                        label=r'Mean ROC (AUC = %0.2f $\pm$ %0.2f)' % (mean_auc, std_auc),
+                        lw=2, alpha=.8)
+
+                std_tpr = np.std(tprs, axis=0)
+                tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+                tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+                ax.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
+                                label=r'$\pm$ 1 std. dev.')
+
+                ax.set(xlim=[-0.05, 1.05], ylim=[-0.05, 1.05],
+                       title="Receiver operating characteristic example")
+                ax.legend(loc="lower right")
+                plt.tight_layout()
+                plt.savefig(os.path.join(self.output_dir, 'k_fold_AUROC.png'))
+                if plot:
+                    plt.show()
+                plt.close()
+
+                recalls = np.asarray(recalls)
+                precisions = np.asarray(precisions)
+                test_accs = np.asarray(test_accs)
+                tprs = np.asarray(tprs)
+                tprs_2 = np.asarray(tprs_2)
+                fprs = np.asarray(fprs)
+                aucs = np.asarray(aucs)
+                results = pd.DataFrame([test_accs, tprs, aucs, tprs_2, fprs, precisions, recalls]).T
+                cols = ['test_accs', 'tprs', 'aucs', 'tprs_2', 'fprs', 'precision', 'recall']
+                results.columns = cols
+                results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                     '_k_fold_test_classification_report.csv'))
+
+
+            elif self.k_cv == 'loo_cv':
+                kf = LeaveOneOut()
+                y_probs = []
+                y_preds = []
+                y_GTs = []
+                i = 0
+                for train_index, test_index in kf.split(self.X):
+                    i += 1
+                    if i % 10 == 0:
+                        print('Loo-cv split number: ', i)
+                    X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
+                    y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+                    self.model = self.make_model(self.config)
+                    self.model.fit(X_train, y_train.values.ravel())
+                    pred = self.model.predict(X_test)
+                    prob = self.model.predict_proba(X_test)
+                    y_preds.append(pred)
+                    y_probs.append(prob)
+                    y_GTs.append(y_test.values[0])
+
+                y_GTs = np.asarray(y_GTs)
+                y_probs = np.asarray(y_probs)
+                y_preds = np.asarray(y_preds)
+                test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
+                conf_mat = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
+                np.savetxt(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
+                results = metrics.classification_report(y_GTs, y_preds, output_dict=True)
+                results = pd.DataFrame(results).transpose()
+                results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                              '_loocv_test_classification_report.csv'))
+
+
+        elif self.type_ == 'reg':
+            if self.k_cv == 'k_fold':
+                kf = KFold(n_splits=self.k)
+                expl_vars = []
+                maes = []
+                mses = []
+                msles = []
+                r2s = []
+                med_aes = []
+                f = 0
+                for train_index, test_index in kf.split(self.X):
+                    f += 1
+                    print('Training fold: ', f)
+                    X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
+                    y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+                    self.model = self.make_model(self.config)
+                    self.model.fit(X_train, y_train.values.ravel())
+                    preds = self.model.predict(X_test)
+                    expl_vars.append(metrics.explained_variance_score(y_test, preds))
+                    maes.append(metrics.mean_absolute_error(y_test, preds))
+                    mses.append(metrics.mean_squared_error(y_test, preds))
+                    msles.append(metrics.mean_squared_log_error(y_test, preds))
+                    med_aes.append(metrics.median_absolute_error(y_test, preds))
+                    r2s.append(metrics.r2_score(y_test, preds))
+
+                expl_vars = np.asarray(expl_vars)
+                maes = np.asarray(maes)
+                mses = np.asarray(mses)
+                msles = np.asarray(msles)
+                r2s = np.asarray(r2s)
+                med_aes = np.asarray(med_aes)
+
+                results = pd.DataFrame([expl_vars, maes, mses, msles, med_aes, r2s]).T
+                cols = ['expl_var', 'mae', 'mse', 'msle', 'med_ae', 'r2']
+                results.columns = cols
+                results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                     '_k_fold_test_regression_report.csv'))
+
+
+            elif self.k_cv == 'loo_cv':
+                kf = LeaveOneOut()
+                y_preds = []
+                y_GTs = []
+                i = 0
+                for train_index, test_index in kf.split(self.X):
+                    i += 1
+                    if i % 10 == 0:
+                        print('Loo-cv split number: ', i)
+                    X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
+                    y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+                    self.model = self.make_model(self.config)
+                    self.model.fit(X_train, y_train.values.ravel())
+                    pred = self.model.predict(X_test)
+                    y_preds.append(pred)
+                    y_GTs.append(y_test.values[0])
+
+                y_GTs = np.asarray(y_GTs)
+                y_preds = np.asarray(y_preds)
+
+                expl_var = metrics.explained_variance_score(y_GTs, y_preds)
+                mae = metrics.mean_absolute_error(y_GTs, y_preds)
+                mse = metrics.mean_squared_error(y_GTs, y_preds)
+                msle = metrics.mean_squared_log_error(y_GTs, y_preds)
+                med_ae = metrics.median_absolute_error(y_GTs, y_preds)
+                r2 = metrics.r2_score(y_GTs, y_preds)
+                results = pd.DataFrame([expl_var, mae, mse, msle, med_ae, r2]).T
+                cols = ['expl_var', 'mae', 'mse', 'msle', 'med_ae', 'r2']
+                results.columns = cols
+                results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                            '_loocv_test_regression_report.csv'))
+
+        return results
+
 
     def tune_model(self, tunable_params=None, folds=3, n_iter=100):
         '''
@@ -167,6 +408,9 @@ class RFShap(object):
         :return: model with optimal hyperparameters
         '''
         print('Tuning the following parameters: ', tunable_params)
+
+        assert self.k_cv == 'all',\
+            'k_cv must be set to False to allow hyperparameter tuning with a designated training set!'
 
         if self.class_ == 'RF':
             possible_params = ['n_estimators', 'criterion', 'max_features', 'max_leaf_nodes', 'max_depth',
@@ -279,7 +523,7 @@ class RFShap(object):
 
         '''
         :param modell: give it a trained model
-        :return:
+        :return: explainer and shapley values
         '''
         assert modell is not None, 'Feed me a model : ]'
 
@@ -294,10 +538,74 @@ class RFShap(object):
         else:
             explainer = shap.LinearExplainer(modell, self.X_test)
             shap_vals = explainer.shap_values(self.X_test)
-            joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + "_linear_explainer.sav"))
-            joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + "_linear_explainer_shap_values.sav"))
+            joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
+            joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
         return explainer, shap_vals
+
+    def shap_bootstrap(self, modell=None, retrain=False, n_bootstraps=1000, n_samples=100, class_ind=0):
+        '''
+
+        :param modell: desired model  (if None then will use model that you trained earlier within this class)
+        :param retrain: this retrains the model for each bootstrap
+        :param n_bootstraps: number of boostraps to undertake
+        :param n_samples: sample size used in each bootstrap
+        :param class_ind: for multiple classes, if you want to look at a particular class
+        :return: shapley values for all bootstraps, and report for mean and standard error
+        '''
+
+        assert n_samples < len(self.X_test), 'n_samples cannot be longer than the test set! Reduce n_samples.'
+
+        if modell == None:
+            modell = self.model
+        shap_vals_bootstraps = []
+
+        if self.k_cv == 'all':
+            X_test_bootstrap = self.X_test
+        elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
+            X_test_bootstrap = self.X
+        indices = np.arange(0, len(X_test_bootstrap))
+        b = 0
+        for _ in range(n_bootstraps):
+            b += 1
+            if b % 20 == 0:
+                print('Bootstrap number: ', b)
+            if retrain:
+                modell = self.make_model(self.config)
+                modell, _ = self.train_test(plot=False)
+            sample_inds = np.random.choice(indices, n_samples)
+            X_test_sample = X_test_bootstrap.iloc[sample_inds]
+            if self.class_ == 'RF':
+                explainer = shap.TreeExplainer(model=modell, model_output='margin')
+                shap_vals = explainer.shap_values(X_test_sample)
+
+                if self.type_ == 'cls':
+                    shap_vals = shap_vals[class_ind]
+
+            elif self.class_ == 'lin':
+                explainer = shap.LinearExplainer(modell, X_test_sample)
+                shap_vals = explainer.shap_values(X_test_sample)
+
+            shap_vals_bootstraps.append(shap_vals)
+
+        shap_vals_bootstraps = np.asarray(shap_vals_bootstraps)
+        abs_shaps = np.abs(shap_vals_bootstraps)
+        mean_shaps = np.mean(abs_shaps, 1)
+        se_bootstraps = sem(mean_shaps, 0)
+        mean_bootstraps = np.mean(mean_shaps, 0)
+        sorted_inds = np.argsort(mean_bootstraps)
+
+        plt.barh(self.X_test.columns[sorted_inds], mean_bootstraps[sorted_inds], yerr=se_bootstraps[sorted_inds] * 1.96)
+        plt.xlabel('mean(|SHAP value|) (average impact on model output magnitude)')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir,))
+        plt.show()
+
+        bootstrap_results = pd.DataFrame([mean_bootstraps, se_bootstraps])
+        bootstrap_results.columns = self.X_test.columns
+        bootstrap_results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                              '_shapley_importances_bootstrap_results.csv'))
+        return shap_vals_bootstraps, bootstrap_results
 
 
     def shap_plot(self, shap_vals=None, specific_var=None, interaction_var=None, classwise=True, class_ind=1):
@@ -339,13 +647,13 @@ class RFShap(object):
             if specific_var is not None:
                 if self.class_ == 'RF':
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                                     shap_values=shap_vals[class_ind], features=self.X_test)
+                                     shap_values=shap_vals[class_ind], features=self.X_test, show=False)
                 else:
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                             shap_values=shap_vals, features=self.X_test)
+                             shap_values=shap_vals, features=self.X_test, show=False)
 
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_effects_summary_{}.png'.format(specific_var)))
+                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
 
@@ -362,7 +670,7 @@ class RFShap(object):
                 shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
                                   show=False)
             else:
-                shap.summary_plot(shap_values=shap_vals[0], features=self.X_test, max_display=20, plot_type='dot',
+                shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
                           show=False)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_effects_summary.png'))
@@ -372,12 +680,12 @@ class RFShap(object):
             if specific_var is not None:
                 if self.class_ == 'RF':
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                                         shap_values=shap_vals, features=self.X_test)
+                                         shap_values=shap_vals, features=self.X_test, show=False)
                 else:
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                                         shap_values=shap_vals[0], features=self.X_test)
+                                         shap_values=shap_vals, features=self.X_test, show=False)
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_effects_summary_{}.png'.format(specific_var)))
+                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
 

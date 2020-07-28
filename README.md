@@ -8,6 +8,27 @@ welcome suggestions.
 
 The ipynb is a jupyter notebook that walks through an example.
 
+
+## 0. Requirements
+pandas == 1.0.5
+
+os
+
+shap == 0.35.0
+
+numpy == 1.18.5
+
+sklearn == 0.23.1
+
+scipy == 1.5.0
+
+imblearn == 0.7.0
+
+matplotlib == 3.2.2
+
+joblib == 0.15.1
+
+
 ## 1.Create environment:
 
 First, get RF_Shap.py into your current working directory. Although this isn't necessary, if you are relatively

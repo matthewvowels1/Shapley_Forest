@@ -22,7 +22,7 @@ class RFShap(object):
     def __init__(self, model_dir=None, exclude_vars=None, outcome_var=None, output_dir=None, random_seed=42,
                  class_='RF', type_='reg', balanced='balanced', trn_tst_split=0.6, k_cv='loo_cv', k=5):
 
-        '''
+        """
         :param model_dir: this is for pre_trained model loading
         :param exclude_vars: list the variables to exclude from the analysis (if any)
         :param outcome_var: name the outcome variable
@@ -33,7 +33,7 @@ class RFShap(object):
         :param balanced:  either 'balanced' or 'unbalanced' for imblearn or sklearn respectively
         :param k_cv: uses k_fold training across entire dataset (but does not allow hyperparam tuning).
         :param k: if k_cv='loo_cv', 'split', 'k_fold'
-        '''
+        """
         assert class_ in ['RF', 'lin'], 'Class not recognised - choose reg or lin.'
         assert type_ in ['reg', 'cls'], 'Type not recognised - choose reg or cls.'
         assert balanced in ['balanced', None], 'Balanced must be balanced or unbalanced'
@@ -59,6 +59,7 @@ class RFShap(object):
         self.y_test = None
         self.X_train = None
         self.y_train = None
+        # TODO: set up config as empty dict i.e. config = {} to avoid needing conditional statements in make_model()
         self.config = None
         self.n_categories = None
 
@@ -66,10 +67,10 @@ class RFShap(object):
             self.model = self.load_model(model_dir_=self.model_dir)
 
     def munch(self, dataset):
-        '''
+        """
         :param dataset:
         :return: self.dataset, self.X (predictors), self.y (targets), self.X_train, self.X_test, self.y_train, self.y_test
-        '''
+        """
 
         print('Preparing dataset...')
         self.dataset = dataset
@@ -115,10 +116,10 @@ class RFShap(object):
 
 
     def make_model(self, config=None):
-        '''
+        """
         :param config : model parameters
         :return: self.model
-        '''
+        """
 
         if config != None:
             self.config = config
@@ -168,10 +169,10 @@ class RFShap(object):
 
     def train_test(self, plot=False):
 
-        '''
+        """
         :param plot: whether to plot the auroc with k-fold training (default is false)
         :return: trained model and performance report
-        '''
+        """
 
         assert self.model != None, 'model cannot be NoneType! Make sure it has been defined.'
         report = None
@@ -185,9 +186,9 @@ class RFShap(object):
 
     def _eval_split(self):
 
-        '''
+        """
         :return: performance report
-        '''
+        """
         assert self.model != None, 'model cannot be NoneType! Make sure it has been defined.'
 
         preds = self.model.predict(self.X_test)
@@ -207,11 +208,10 @@ class RFShap(object):
             expl_var = metrics.explained_variance_score(self.y_test, preds)
             mae = metrics.mean_absolute_error(self.y_test, preds)
             mse = metrics.mean_squared_error(self.y_test, preds)
-            msle = 0
             try:
                 msle = metrics.mean_squared_log_error(self.y_test, preds)
             except:
-                pass
+                msle = 0
             med_ae = metrics.median_absolute_error(self.y_test, preds)
             r2 = metrics.r2_score(self.y_test, preds)
             cols = ['expl_var', 'mae', 'mse', 'msle', 'med_ae', 'r2']
@@ -418,11 +418,10 @@ class RFShap(object):
                 expl_var = metrics.explained_variance_score(y_GTs, y_preds)
                 mae = metrics.mean_absolute_error(y_GTs, y_preds)
                 mse = metrics.mean_squared_error(y_GTs, y_preds)
-                msle = 0
                 try:
                     msle = metrics.mean_squared_log_error(y_GTs, y_preds)
                 except:
-                    pass
+                    msle = 0
                 med_ae = metrics.median_absolute_error(y_GTs, y_preds)
                 r2 = metrics.r2_score(y_GTs, y_preds)
                 results = pd.DataFrame([expl_var, mae, mse, msle, med_ae, r2]).T
@@ -435,12 +434,12 @@ class RFShap(object):
 
 
     def tune_model(self, tunable_params=None, folds=3, n_iter=100):
-        '''
+        """
         :param tunable_params: list of desired parameters to tune over
         :param folds: number of folds for CV
         :param n_iter: number of iters for tuning
         :return: model with optimal hyperparameters
-        '''
+        """
         print('Tuning the following parameters: ', tunable_params)
 
         assert self.k_cv == 'split',\
@@ -554,10 +553,10 @@ class RFShap(object):
 
     def run_shap_explainer(self, modell):
 
-        '''
+        """
         :param modell: give it a trained model
         :return: explainer and shapley values
-        '''
+        """
         assert modell is not None, 'Feed me a model : ]'
 
         print('Running Shap Explainer using the same train/test split you used to train the model.')
@@ -577,7 +576,7 @@ class RFShap(object):
         return explainer, shap_vals
 
     def shap_bootstrap(self, modell=None, retrain=False, n_bootstraps=1000, n_samples=100, class_ind=0):
-        '''
+        """
 
         :param modell: desired model  (if None then will use model that you trained earlier within this class)
         :param retrain: this retrains the model for each bootstrap
@@ -585,7 +584,7 @@ class RFShap(object):
         :param n_samples: sample size used in each bootstrap
         :param class_ind: for multiple classes, if you want to look at a particular class
         :return: shapley values for all bootstraps, and report for mean and standard error
-        '''
+        """
 
         assert n_samples < len(self.X_test), 'n_samples cannot be longer than the test set! Reduce n_samples.'
 
@@ -644,13 +643,13 @@ class RFShap(object):
 
     def shap_plot(self, shap_vals=None, specific_var=None, interaction_var=None, classwise=True, class_ind=1):
 
-        '''
+        """
         :param explainer: explainer
         :param shap_vals: vals derived from running the explainer
         :param specific_var: if desired, run the individual feature plots
         :param interaction_var: which desired var to plot as interacting with 'specific var'
         :param class ind: when plotting classifier results, pick class index to plot with
-        '''
+        """
 
         if self.type_ == 'cls':
 

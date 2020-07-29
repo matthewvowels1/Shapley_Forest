@@ -3,6 +3,7 @@ import os
 import shap
 import numpy as np
 from sklearn import metrics
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
@@ -13,7 +14,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold, train_test_split, RandomizedSearchCV, LeaveOneOut
 import joblib
 
-
+EPS = 1e-3
 # some material taken from
 # github.com/manujosephv/interpretability_blog/blob/master/census_income_interpretability.ipynb
 
@@ -59,6 +60,7 @@ class RFShap(object):
         self.X_train = None
         self.y_train = None
         self.config = None
+        self.n_categories = None
 
         if self.model_dir is not None:
             self.model = self.load_model(model_dir_=self.model_dir)
@@ -74,7 +76,11 @@ class RFShap(object):
         if self.exclude_vars is not None:
             self.dataset = dataset.drop(columns=self.exclude_vars)
         self.y = self.dataset[[self.outcome_var]]
+        self.n_categories = len(np.unique(self.y))
         self.X = self.dataset.drop(columns=self.outcome_var)
+
+        if self.class_ == 'lin':
+            self.X = (self.X-self.X.mean())/(self.X.std() + EPS)
 
         self.X_train, self.X_test, self.y_train, self.y_test = self._split_data()
 
@@ -150,8 +156,14 @@ class RFShap(object):
 
 
     def _split_data(self):
-        X_train, X_test, y_train, y_test = train_test_split(self.X, self.y,
-                                                            test_size=self.trn_tst_split, random_state=self.seed)
+        if self.trn_tst_split < 1.0:
+            X_train, X_test, y_train, y_test = train_test_split(self.X, self.y,
+                                                                test_size=self.trn_tst_split, random_state=self.seed)
+        elif self.trn_tst_split == 1.0:
+            X_train = self.X
+            X_test = self.X
+            y_train = self.y
+            y_test = self.y
         return X_train, X_test, y_train, y_test
 
     def train_test(self, plot=False):
@@ -168,10 +180,10 @@ class RFShap(object):
 
         elif self.k_cv == 'split':
             self.model.fit(self.X_train, self.y_train.values.ravel())
-            report = self._eval_all()
+            report = self._eval_split()
         return self.model, report
 
-    def _eval_all(self):
+    def _eval_split(self):
 
         '''
         :return: performance report
@@ -184,7 +196,7 @@ class RFShap(object):
         if self.type_ == 'cls':
             print("Accuracy: %s%%" % (100 * metrics.accuracy_score(self.y_test, preds)))
             conf_mat = np.asarray(metrics.confusion_matrix(self.y_test.values.ravel(), preds))
-            np.savetxt(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+            np.savetxt(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' + str(self.class_) +
                                     '_simple_test_conf_mat.txt'), conf_mat)
             report = metrics.classification_report(self.y_test, preds, output_dict=True)
             df_report = pd.DataFrame(report).transpose()
@@ -195,7 +207,11 @@ class RFShap(object):
             expl_var = metrics.explained_variance_score(self.y_test, preds)
             mae = metrics.mean_absolute_error(self.y_test, preds)
             mse = metrics.mean_squared_error(self.y_test, preds)
-            msle = metrics.mean_squared_log_error(self.y_test, preds)
+            msle = 0
+            try:
+                msle = metrics.mean_squared_log_error(self.y_test, preds)
+            except:
+                pass
             med_ae = metrics.median_absolute_error(self.y_test, preds)
             r2 = metrics.r2_score(self.y_test, preds)
             cols = ['expl_var', 'mae', 'mse', 'msle', 'med_ae', 'r2']
@@ -216,7 +232,6 @@ class RFShap(object):
             if self.k_cv == 'k_fold':
                 kf = KFold(n_splits=self.k)
                 test_accs = []
-                reports = []
                 tprs = []
                 aucs = []
                 tprs_2 = []
@@ -224,9 +239,11 @@ class RFShap(object):
                 precisions = []
                 recalls = []
                 mean_fpr = np.linspace(0, 1, 100)
+                report = {}
                 i = 0
                 f = 0
-                fig, ax = plt.subplots()
+                if self.n_categories <= 2:
+                    fig, ax = plt.subplots(figsize=(14, 7))
                 for train_index, test_index in kf.split(self.X):
                     f += 1
                     print('Training fold: ', f)
@@ -237,59 +254,71 @@ class RFShap(object):
                     preds = self.model.predict(X_test)
                     probs = self.model.predict_proba(X_test)
                     test_accs.append(100 * metrics.accuracy_score(y_test, preds))
-                    reports.append(metrics.classification_report(y_test, preds, output_dict=True))
-                    fpr, tpr, _ = metrics.roc_curve(y_test, probs[:,0])
-                    tprs_2.append(tpr)
-                    fprs.append(fpr)
-                    precisions.append(metrics.precision_score(y_test, preds, average=None))
-                    recalls.append(metrics.recall_score(y_test, preds, average=None))
-                    viz = metrics.plot_roc_curve(self.model, X_test, y_test,
-                                         name='ROC fold {}'.format(i),
-                                         alpha=0.3, lw=1, ax=ax)
-                    interp_tpr = np.interp(mean_fpr, viz.fpr, viz.tpr)
-                    interp_tpr[0] = 0.0
-                    tprs.append(interp_tpr)
-                    aucs.append(viz.roc_auc)
+                    rep = metrics.classification_report(y_test, preds, output_dict=True)
+                    rep = self.unravel_report(rep)
+                    report = self.combine_dicts(report, rep)
+
+                    if self.n_categories <= 2:
+                        fpr, tpr, _ = metrics.roc_curve(y_test, probs[:, 0])
+                        tprs_2.append(tpr)
+                        fprs.append(fpr)
+                        precisions.append(metrics.precision_score(y_test, preds, average=None))
+                        recalls.append(metrics.recall_score(y_test, preds, average=None))
+                        viz = metrics.plot_roc_curve(self.model, X_test, y_test,
+                                             name='ROC fold {}'.format(i),
+                                             alpha=0.3, lw=1, ax=ax)
+                        interp_tpr = np.interp(mean_fpr, viz.fpr, viz.tpr)
+                        interp_tpr[0] = 0.0
+                        tprs.append(interp_tpr)
+                        aucs.append(viz.roc_auc)
                     i += 1
 
-                ax.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r',
-                        label='Chance', alpha=.8)
+                if self.n_categories <= 2:
+                    ax.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r',
+                            label='Chance', alpha=.8)
 
-                mean_tpr = np.mean(tprs, axis=0)
-                mean_tpr[-1] = 1.0
-                mean_auc = metrics.auc(mean_fpr, mean_tpr)
-                std_auc = np.std(aucs)
-                ax.plot(mean_fpr, mean_tpr, color='b',
-                        label=r'Mean ROC (AUC = %0.2f $\pm$ %0.2f)' % (mean_auc, std_auc),
-                        lw=2, alpha=.8)
+                    mean_tpr = np.mean(tprs, axis=0)
+                    mean_tpr[-1] = 1.0
+                    mean_auc = metrics.auc(mean_fpr, mean_tpr)
+                    std_auc = np.std(aucs)
+                    ax.plot(mean_fpr, mean_tpr, color='b',
+                            label=r'Mean ROC (AUC = %0.2f $\pm$ %0.2f)' % (mean_auc, std_auc),
+                            lw=2, alpha=.8)
 
-                std_tpr = np.std(tprs, axis=0)
-                tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
-                tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
-                ax.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
-                                label=r'$\pm$ 1 std. dev.')
+                    std_tpr = np.std(tprs, axis=0)
+                    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+                    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+                    ax.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
+                                    label=r'$\pm$ 1 std. dev.')
 
-                ax.set(xlim=[-0.05, 1.05], ylim=[-0.05, 1.05],
-                       title="Receiver operating characteristic example")
-                ax.legend(loc="lower right")
-                plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, 'k_fold_AUROC.png'))
-                if plot:
-                    plt.show()
-                plt.close()
+                    ax.set(xlim=[-0.05, 1.05], ylim=[-0.05, 1.05],
+                           title="Receiver operating characteristic example")
+                    ax.legend(loc="lower right")
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' +'_k_fold_AUROC.png'))
+                    if plot:
+                        plt.show()
+                    plt.close()
 
-                recalls = np.asarray(recalls)
-                precisions = np.asarray(precisions)
+                    recalls = np.asarray(recalls)
+                    precisions = np.asarray(precisions)
+                    tprs = np.asarray(tprs)
+                    tprs_2 = np.asarray(tprs_2)
+                    fprs = np.asarray(fprs)
+                    aucs = np.asarray(aucs)
+
                 test_accs = np.asarray(test_accs)
-                tprs = np.asarray(tprs)
-                tprs_2 = np.asarray(tprs_2)
-                fprs = np.asarray(fprs)
-                aucs = np.asarray(aucs)
-                results = pd.DataFrame([test_accs, tprs, aucs, tprs_2, fprs, precisions, recalls]).T
-                cols = ['test_accs', 'tprs', 'aucs', 'tprs_2', 'fprs', 'precision', 'recall']
-                results.columns = cols
-                results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                     '_k_fold_test_classification_report.csv'))
+                if self.n_categories <= 2:
+                    results = pd.DataFrame([test_accs, tprs, aucs, tprs_2, fprs, precisions, recalls]).T
+                    cols = ['test_accs', 'tprs', 'aucs', 'tprs_2', 'fprs', 'precision', 'recall']
+                    results.columns = cols
+                    results = results.append(results.mean(), ignore_index=True)
+                    results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                                '_k_fold_test_classification_report.csv'))
+                else:
+                    results = pd.DataFrame(report)
+                    results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                                '_k_fold_test_classification_report.csv'))
 
 
             elif self.k_cv == 'loo_cv':
@@ -316,7 +345,7 @@ class RFShap(object):
                 y_preds = np.asarray(y_preds)
                 test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
                 conf_mat = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
-                np.savetxt(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
+                np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
                 results = metrics.classification_report(y_GTs, y_preds, output_dict=True)
                 results = pd.DataFrame(results).transpose()
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
@@ -344,7 +373,10 @@ class RFShap(object):
                     expl_vars.append(metrics.explained_variance_score(y_test, preds))
                     maes.append(metrics.mean_absolute_error(y_test, preds))
                     mses.append(metrics.mean_squared_error(y_test, preds))
-                    msles.append(metrics.mean_squared_log_error(y_test, preds))
+                    try:
+                        msles.append(metrics.mean_squared_log_error(y_test, preds))
+                    except:
+                        pass
                     med_aes.append(metrics.median_absolute_error(y_test, preds))
                     r2s.append(metrics.r2_score(y_test, preds))
 
@@ -358,6 +390,8 @@ class RFShap(object):
                 results = pd.DataFrame([expl_vars, maes, mses, msles, med_aes, r2s]).T
                 cols = ['expl_var', 'mae', 'mse', 'msle', 'med_ae', 'r2']
                 results.columns = cols
+                results = results.append(results.mean(), ignore_index=True)
+                print('Last row is the mean across columns.')
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
                                      '_k_fold_test_regression_report.csv'))
 
@@ -384,7 +418,11 @@ class RFShap(object):
                 expl_var = metrics.explained_variance_score(y_GTs, y_preds)
                 mae = metrics.mean_absolute_error(y_GTs, y_preds)
                 mse = metrics.mean_squared_error(y_GTs, y_preds)
-                msle = metrics.mean_squared_log_error(y_GTs, y_preds)
+                msle = 0
+                try:
+                    msle = metrics.mean_squared_log_error(y_GTs, y_preds)
+                except:
+                    pass
                 med_ae = metrics.median_absolute_error(y_GTs, y_preds)
                 r2 = metrics.r2_score(y_GTs, y_preds)
                 results = pd.DataFrame([expl_var, mae, mse, msle, med_ae, r2]).T
@@ -406,7 +444,7 @@ class RFShap(object):
         print('Tuning the following parameters: ', tunable_params)
 
         assert self.k_cv == 'split',\
-            'k_cv must be set to False to allow hyperparameter tuning with a designated training set!'
+            'k_cv must be set to "split" to allow hyperparameter tuning with a designated training set!'
 
         if self.class_ == 'RF':
             possible_params = ['n_estimators', 'criterion', 'max_features', 'max_leaf_nodes', 'max_depth',
@@ -590,16 +628,17 @@ class RFShap(object):
         mean_bootstraps = np.mean(mean_shaps, 0)
         sorted_inds = np.argsort(mean_bootstraps)
 
-        plt.barh(self.X_test.columns[sorted_inds], mean_bootstraps[sorted_inds], yerr=se_bootstraps[sorted_inds] * 1.96)
-        plt.xlabel('mean(|SHAP value|) (average impact on model output magnitude)')
+        plt.figure(figsize=(7, 10))
+        plt.barh(X_test_bootstrap.columns[sorted_inds][-20:], mean_bootstraps[sorted_inds][-20:], xerr=se_bootstraps[sorted_inds][-20:] * 1.96)
+        plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir,))
+        plt.savefig(os.path.join(self.output_dir, self.outcome_var + 'bootstrap_shap.png'))
         plt.show()
 
         bootstrap_results = pd.DataFrame([mean_bootstraps, se_bootstraps])
         bootstrap_results.columns = self.X_test.columns
-        bootstrap_results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                              '_shapley_importances_bootstrap_results.csv'))
+        bootstrap_results.to_csv(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) +
+                                                '_' + str(self.class_) + '_shapley_importances_bootstrap_results.csv'))
         return shap_vals_bootstraps, bootstrap_results
 
 
@@ -617,14 +656,18 @@ class RFShap(object):
 
             if classwise or (self.class_ == 'lin'):
                 shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='bar', show=False)
+                plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_val_summary.png'))
+                plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                         str(self.class_) + 'shap_val_summary.png'))
                 plt.show()
                 plt.close()
             else:
                 shap.summary_plot(shap_values=shap_vals[class_ind], features=self.X_test, max_display=20, plot_type='bar', show=False)
+                plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_val_summary.png'))
+                plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                         str(self.class_) + 'shap_val_summary.png'))
                 plt.show()
                 plt.close()
 
@@ -635,7 +678,8 @@ class RFShap(object):
                 shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
                               show=False)
             plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_effects_summary.png'))
+            plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                     str(self.class_) + '_' + str(class_ind) + '_shap_effects_summary.png'))
             plt.show()
             plt.close()
 
@@ -648,7 +692,8 @@ class RFShap(object):
                              shap_values=shap_vals, features=self.X_test, show=False)
 
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
+                plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_'
+                                         + str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
 
@@ -656,8 +701,10 @@ class RFShap(object):
 
             shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='bar',
                               show=False)
+            plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
             plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_val_summary.png'))
+            plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                     str(self.class_) + 'shap_val_summary.png'))
             plt.show()
             plt.close()
 
@@ -668,7 +715,8 @@ class RFShap(object):
                 shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
                           show=False)
             plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_effects_summary.png'))
+            plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                     str(self.class_) + 'shap_effects_summary.png'))
             plt.show()
             plt.close()
 
@@ -680,18 +728,41 @@ class RFShap(object):
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
                                          shap_values=shap_vals, features=self.X_test, show=False)
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
+                plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                         str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
 
+    def unravel_report(self, report):
+        new_d = {}
+        for key in report.keys():
+            p1 = report[key]
+            if key == 'accuracy':
+                new_d[key] = report[key]
+            try:
+                _ = float(key)
+                for key2 in p1.keys():
+                    new_key_name = str(key) + ' ' + str(key2)
+                    new_d[new_key_name] = report[key][key2]
 
+            except:
+                try:
+                    for key2 in p1.keys():
+                        new_key_name = str(key) + ' ' + str(key2)
+                        new_d[new_key_name] = report[key][key2]
+                except:
+                    pass
+        return new_d
 
+    def combine_dicts(self, d_all, d_add):
 
+        for key in d_add.keys():
+            if key in d_all.keys():
+                d_all[key] = np.concatenate((d_all[key], np.array([d_add[key]])))
 
-
-
-
-
+            else:
+                d_all[key] = np.asarray([d_add[key]])
+        return d_all
 
 
 

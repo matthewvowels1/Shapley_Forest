@@ -80,6 +80,8 @@ dataset, X, y, xtr, xts, ytr, ytst  = shap_env.munch(dataset=dataset)
 
 This will remove your `exclude_vars` and create the train/test split that should be used for all subsequent
  hyperparameter tuning and testing - so make sure you are happy with this split!
+ 
+ Note that if `class_='lin'` then `munch` will also normalize the data (mean =0 , std = 1)
 
 ## 3. Create a model
 

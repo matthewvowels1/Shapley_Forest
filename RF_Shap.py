@@ -141,14 +141,14 @@ class RFShap(object):
             if self.type_ == 'reg':
                 if self.balanced == 'balanced':
                     print('WARNING: balanced regressor not applicable')
-                    self.model = RandomForestRegressor(**config) if config != None else RandomForestRegressor()
+                    self.model = RandomForestRegressor(**config) if config != None else RandomForestRegressor(random_state=self.seed)
                 elif self.balanced == None:
-                    self.model = RandomForestRegressor(**config) if config != None else RandomForestRegressor()
+                    self.model = RandomForestRegressor(**config) if config != None else RandomForestRegressor(random_state=self.seed)
             elif self.type_ == 'cls':
                 if self.balanced == 'balanced':
-                    self.model = BalancedRandomForestClassifier(**config) if config != None else BalancedRandomForestClassifier()
+                    self.model = BalancedRandomForestClassifier(**config) if config != None else BalancedRandomForestClassifier(random_state=self.seed)
                 elif self.balanced == None:
-                    self.model = RandomForestClassifier(**config) if config != None else RandomForestClassifier()
+                    self.model = RandomForestClassifier(**config) if config != None else RandomForestClassifier(random_state=self.seed)
         elif self.class_ == 'lin':
             if self.type_ == 'reg':
                 if self.balanced == 'balanced':
@@ -241,7 +241,7 @@ class RFShap(object):
 
         if self.type_ == 'cls':
             if self.k_cv == 'k_fold':
-                kf = KFold(n_splits=self.k)
+                kf = KFold(n_splits=self.k, random_state=self.seed)
                 test_accs = []
                 tprs = []
                 aucs = []
@@ -363,7 +363,7 @@ class RFShap(object):
 
         elif self.type_ == 'reg':
             if self.k_cv == 'k_fold':
-                kf = KFold(n_splits=self.k)
+                kf = KFold(n_splits=self.k, random_state=self.seed)
                 expl_vars = []
                 maes = []
                 mses = []
@@ -675,6 +675,9 @@ class RFShap(object):
         :return shap_interaction_vals: these are expensive to compute, so only want to do so once!
         """
         interaction_var = None
+        if len(interaction_vars) > 2:
+            raise Exception('Interaction vars list cannot be greater than 2.')
+
 
         def plot_interactions(data, expl=None, vars_=None, class_index=1):
             if self.shap_interaction_vals is None:
@@ -703,7 +706,7 @@ class RFShap(object):
                 shap.dependence_plot(
                     vars_,
                     self.shap_interaction_vals,
-                    data)
+                    data, show=False)
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
                                          str(self.class_) + '_interaction_{}_{}_{}.png'.format(vars_[0], vars_[1], class_index)))
@@ -724,7 +727,7 @@ class RFShap(object):
                 plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                         str(self.class_) + 'shap_val_summary.png'))
+                                         str(self.class_) + '_' + str(num_display) +'_shap_val_summary.png'))
                 plt.show()
                 plt.close()
             else:
@@ -732,7 +735,7 @@ class RFShap(object):
                 plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
-                                         str(self.class_) + 'shap_val_summary.png'))
+                                         str(self.class_) + '_' + str(num_display) +'_shap_val_summary.png'))
                 plt.show()
                 plt.close()
 
@@ -744,7 +747,7 @@ class RFShap(object):
                               show=False)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                     str(self.class_) + '_' + str(class_ind) + '_shap_effects_summary.png'))
+                                     str(self.class_) + '_' + str(class_ind) + '_' + str(num_display) +'_shap_effects_summary.png'))
             plt.show()
             plt.close()
 
@@ -758,7 +761,7 @@ class RFShap(object):
 
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_'
-                                         + str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
+                                         + str(self.class_) + '_' + str(num_display) +'_shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
 
@@ -771,7 +774,7 @@ class RFShap(object):
             plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                     str(self.class_) + 'shap_val_summary.png'))
+                                     str(self.class_) + '_' + str(num_display) +'_shap_val_summary.png'))
             plt.show()
             plt.close()
 
@@ -783,7 +786,7 @@ class RFShap(object):
                           show=False)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                     str(self.class_) + 'shap_effects_summary.png'))
+                                     str(self.class_) + '_' + str(num_display) +'_shap_effects_summary.png'))
             plt.show()
             plt.close()
 
@@ -796,7 +799,7 @@ class RFShap(object):
                                          shap_values=shap_vals, features=X_test_plot, show=False)
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                         str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
+                                         str(self.class_) + '_' + str(num_display) +'_shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
 

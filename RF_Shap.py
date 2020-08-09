@@ -3,16 +3,20 @@ import os
 import shap
 import numpy as np
 from sklearn import metrics
-from sklearn.preprocessing import MinMaxScaler
+import alibi
+from alibi.explainers import TreeShap
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import LinearRegression
 from imblearn.ensemble import BalancedRandomForestClassifier
+from imblearn.metrics import classification_report_imbalanced
 from scipy.stats import sem
 import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold, train_test_split, RandomizedSearchCV, LeaveOneOut
 import joblib
+from itertools import  zip_longest
+from functools import partial
 
 EPS = 1e-3
 # some material taken from
@@ -53,6 +57,7 @@ class RFShap(object):
         self.k = k
         self.dataset = None
         self.model = None
+        self.cat_list = None
         self.X = None
         self.y = None
         self.X_test = None
@@ -62,6 +67,7 @@ class RFShap(object):
         # TODO: set up config as empty dict i.e. config = {} to avoid needing conditional statements in make_model()
         self.config = None
         self.n_categories = None
+        self.shap_interaction_vals = None
 
         if self.model_dir is not None:
             self.model = self.load_model(model_dir_=self.model_dir)
@@ -76,9 +82,14 @@ class RFShap(object):
         self.dataset = dataset
         if self.exclude_vars is not None:
             self.dataset = dataset.drop(columns=self.exclude_vars)
+        self.dataset = self.dataset.sample(frac=1, random_state=self.seed).reset_index(drop=True)
+        print('Check if continuous or categorical variables: ')
+        self.cat_list = self.find_categorial(self.dataset)
+        print(self.cat_list)
         self.y = self.dataset[[self.outcome_var]]
         self.n_categories = len(np.unique(self.y))
         self.X = self.dataset.drop(columns=self.outcome_var)
+
 
         if self.class_ == 'lin':
             self.X = (self.X-self.X.mean())/(self.X.std() + EPS)
@@ -199,10 +210,10 @@ class RFShap(object):
             conf_mat = np.asarray(metrics.confusion_matrix(self.y_test.values.ravel(), preds))
             np.savetxt(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' + str(self.class_) +
                                     '_simple_test_conf_mat.txt'), conf_mat)
-            report = metrics.classification_report(self.y_test, preds, output_dict=True)
-            df_report = pd.DataFrame(report).transpose()
+            report = classification_report_imbalanced(self.y_test, preds)
+            df_report = self.imblearn_rep_to_df(report)
             df_report.to_csv(os.path.join(self.output_dir,  str(self.type_) + '_' + str(self.class_) +
-                                          '_simple_test_classification_report.csv'))
+                                          '_simple_test_classification_report.csv'), index=False)
 
         elif self.type_ == 'reg':
             expl_var = metrics.explained_variance_score(self.y_test, preds)
@@ -218,7 +229,7 @@ class RFShap(object):
             df_report = pd.DataFrame([expl_var, mae, mse, msle, med_ae, r2]).T
             df_report.columns = cols
             df_report.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                          '_simple_test_regression_report.csv'))
+                                          '_simple_test_regression_report.csv'), index=False)
 
         return df_report
 
@@ -239,7 +250,8 @@ class RFShap(object):
                 precisions = []
                 recalls = []
                 mean_fpr = np.linspace(0, 1, 100)
-                report = {}
+                # report = {}
+                results = pd.DataFrame()
                 i = 0
                 f = 0
                 if self.n_categories <= 2:
@@ -254,9 +266,12 @@ class RFShap(object):
                     preds = self.model.predict(X_test)
                     probs = self.model.predict_proba(X_test)
                     test_accs.append(100 * metrics.accuracy_score(y_test, preds))
-                    rep = metrics.classification_report(y_test, preds, output_dict=True)
-                    rep = self.unravel_report(rep)
-                    report = self.combine_dicts(report, rep)
+                    rep = classification_report_imbalanced(y_test, preds)
+                    # rep = self.unravel_report(rep)
+                    # report = self.combine_dicts(report, rep)
+                    rep = self.imblearn_rep_to_df(rep)
+                    rep['fold'] = f
+                    results = pd.concat([results, rep])
 
                     if self.n_categories <= 2:
                         fpr, tpr, _ = metrics.roc_curve(y_test, probs[:, 0])
@@ -308,17 +323,11 @@ class RFShap(object):
                     aucs = np.asarray(aucs)
 
                 test_accs = np.asarray(test_accs)
-                if self.n_categories <= 2:
-                    results = pd.DataFrame([test_accs, tprs, aucs, tprs_2, fprs, precisions, recalls]).T
-                    cols = ['test_accs', 'tprs', 'aucs', 'tprs_2', 'fprs', 'precision', 'recall']
-                    results.columns = cols
-                    results = results.append(results.mean(), ignore_index=True)
-                    results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                                '_k_fold_test_classification_report.csv'))
-                else:
-                    results = pd.DataFrame(report)
-                    results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                                '_k_fold_test_classification_report.csv'))
+
+                print(results)
+                # results = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in report.items()]))
+                self.save_kfold_summary(results)
+
 
 
             elif self.k_cv == 'loo_cv':
@@ -346,10 +355,10 @@ class RFShap(object):
                 test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
                 conf_mat = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
                 np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
-                results = metrics.classification_report(y_GTs, y_preds, output_dict=True)
-                results = pd.DataFrame(results).transpose()
+                results = classification_report_imbalanced(y_GTs, y_preds)
+                results = self.imblearn_rep_to_df(results)
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                              '_loocv_test_classification_report.csv'))
+                                              '_loocv_test_classification_report.csv'), index=False)
 
 
         elif self.type_ == 'reg':
@@ -393,7 +402,7 @@ class RFShap(object):
                 results = results.append(results.mean(), ignore_index=True)
                 print('Last row is the mean across columns.')
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                     '_k_fold_test_regression_report.csv'))
+                                     '_k_fold_test_regression_report.csv'), index=False)
 
 
             elif self.k_cv == 'loo_cv':
@@ -428,7 +437,7 @@ class RFShap(object):
                 cols = ['expl_var', 'mae', 'mse', 'msle', 'med_ae', 'r2']
                 results.columns = cols
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                            '_loocv_test_regression_report.csv'))
+                                            '_loocv_test_regression_report.csv'), index=False)
 
         return results
 
@@ -559,17 +568,29 @@ class RFShap(object):
         """
         assert modell is not None, 'Feed me a model : ]'
 
-        print('Running Shap Explainer using the same train/test split you used to train the model.')
+        if self.k_cv == 'split':
+            X_test = self.X_test
+        elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
+            X_test = self.X
+
+        model_output = 'margin' if self.type_ == 'reg' else 'raw'
+        print('Running Shap Explainer.')
         explainer = shap_vals = None
+
+        # 'tree_path_dependent' does the 'true to data' approach rather than the interventional approach which is
+        # true to the model, see https://arxiv.org/abs/2006.16234
+        # (Hugh Chen, Joseph D. Janizek, Scott Lundberg, Su-In Lee 2020)
+        # note that the interventioanl option requires a 'background dataset'
+
         if self.class_ == 'RF':
-            explainer = shap.TreeExplainer(model=modell, model_output='margin')
-            shap_vals = explainer.shap_values(self.X_test)
+            explainer = shap.TreeExplainer(model=modell, model_output=model_output, feature_perturbation="tree_path_dependent")
+            shap_vals = explainer.shap_values(X_test)
 
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer.sav"))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer_shap_values.sav"))
         else:
-            explainer = shap.LinearExplainer(modell, self.X_test)
-            shap_vals = explainer.shap_values(self.X_test)
+            explainer = shap.LinearExplainer(modell, X_test)
+            shap_vals = explainer.shap_values(X_test)
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
@@ -608,7 +629,8 @@ class RFShap(object):
             sample_inds = np.random.choice(indices, n_samples)
             X_test_sample = X_test_bootstrap.iloc[sample_inds]
             if self.class_ == 'RF':
-                explainer = shap.TreeExplainer(model=modell, model_output='margin')
+                model_output = 'margin' if self.type_ == 'reg' else 'raw'
+                explainer = shap.TreeExplainer(model=modell, model_output=model_output, feature_perturbation="tree_path_dependent")
                 shap_vals = explainer.shap_values(X_test_sample)
 
                 if self.type_ == 'cls':
@@ -637,11 +659,12 @@ class RFShap(object):
         bootstrap_results = pd.DataFrame([mean_bootstraps, se_bootstraps])
         bootstrap_results.columns = self.X_test.columns
         bootstrap_results.to_csv(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) +
-                                                '_' + str(self.class_) + '_shapley_importances_bootstrap_results.csv'))
+                                                '_' + str(self.class_) + '_shapley_importances_bootstrap_results.csv'), index=False)
         return shap_vals_bootstraps, bootstrap_results
 
 
-    def shap_plot(self, shap_vals=None, specific_var=None, interaction_var=None, classwise=True, class_ind=1):
+    def shap_plot(self, explainer=None, shap_vals=None, specific_var=None, interactions=False,
+                  interaction_vars=None, classwise=True, class_ind=1, num_display=20):
 
         """
         :param explainer: explainer
@@ -649,12 +672,55 @@ class RFShap(object):
         :param specific_var: if desired, run the individual feature plots
         :param interaction_var: which desired var to plot as interacting with 'specific var'
         :param class ind: when plotting classifier results, pick class index to plot with
+        :return shap_interaction_vals: these are expensive to compute, so only want to do so once!
         """
+        interaction_var = None
+
+        def plot_interactions(data, expl=None, vars_=None, class_index=1):
+            if self.shap_interaction_vals is None:
+                if self.type_ == 'cls':
+                    self.shap_interaction_vals = expl.shap_interaction_values(data)[class_index]
+                elif self.type_ == 'reg':
+                    self.shap_interaction_vals = expl.shap_interaction_values(data)
+
+            tmp = np.abs(self.shap_interaction_vals).sum(0)
+            for i in range(tmp.shape[0]):
+                tmp[i, i] = 0
+            inds = np.argsort(-tmp.sum(0))[:50]
+            tmp2 = tmp[inds, :][:, inds]
+            plt.figure(figsize=(12, 12))
+            plt.imshow(tmp2)
+            plt.yticks(range(tmp2.shape[0]), data.columns[inds], rotation=50.4, horizontalalignment="right")
+            plt.xticks(range(tmp2.shape[0]), data.columns[inds], rotation=50.4, horizontalalignment="left")
+            plt.gca().xaxis.tick_top()
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
+                        str(self.class_) + '_interaction_matrix_{}.png'.format(class_index)))
+            plt.show()
+            plt.close()
+
+            if vars_ != None:
+                shap.dependence_plot(
+                    vars_,
+                    self.shap_interaction_vals,
+                    data)
+                plt.tight_layout()
+                plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
+                                         str(self.class_) + '_interaction_{}_{}_{}.png'.format(vars_[0], vars_[1], class_index)))
+                plt.show()
+                plt.close()
+
+        if self.k_cv == 'split':
+            X_test_plot = self.X_test
+        elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
+            X_test_plot = self.X
 
         if self.type_ == 'cls':
+            if interactions:
+                plot_interactions(X_test_plot, explainer, interaction_vars, class_ind)
 
             if classwise or (self.class_ == 'lin'):
-                shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='bar', show=False)
+                shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='bar', show=False)
                 plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
@@ -662,19 +728,19 @@ class RFShap(object):
                 plt.show()
                 plt.close()
             else:
-                shap.summary_plot(shap_values=shap_vals[class_ind], features=self.X_test, max_display=20, plot_type='bar', show=False)
+                shap.summary_plot(shap_values=shap_vals[class_ind], features=X_test_plot, max_display=num_display, plot_type='bar', show=False)
                 plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
                                          str(self.class_) + 'shap_val_summary.png'))
                 plt.show()
                 plt.close()
 
             if self.class_ == 'RF':
-                shap.summary_plot(shap_values=shap_vals[class_ind], features=self.X_test, max_display=20, plot_type='dot',
+                shap.summary_plot(shap_values=shap_vals[class_ind], features=X_test_plot, max_display=num_display, plot_type='dot',
                               show=False)
             else:
-                shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
+                shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='dot',
                               show=False)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
@@ -685,10 +751,10 @@ class RFShap(object):
             if specific_var is not None:
                 if self.class_ == 'RF':
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                                     shap_values=shap_vals[class_ind], features=self.X_test, show=False)
+                                     shap_values=shap_vals[class_ind], features=X_test_plot, show=False)
                 else:
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                             shap_values=shap_vals, features=self.X_test, show=False)
+                             shap_values=shap_vals, features=X_test_plot, show=False)
 
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_'
@@ -697,8 +763,10 @@ class RFShap(object):
                 plt.close()
 
         elif self.type_ == 'reg':
+            if interactions:
+                plot_interactions(X_test_plot, explainer, interaction_vars, class_ind)
 
-            shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='bar',
+            shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='bar',
                               show=False)
             plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
             plt.tight_layout()
@@ -708,10 +776,10 @@ class RFShap(object):
             plt.close()
 
             if self.class_ == 'RF':
-                shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
+                shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='dot',
                                   show=False)
             else:
-                shap.summary_plot(shap_values=shap_vals, features=self.X_test, max_display=20, plot_type='dot',
+                shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='dot',
                           show=False)
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
@@ -722,15 +790,29 @@ class RFShap(object):
             if specific_var is not None:
                 if self.class_ == 'RF':
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                                         shap_values=shap_vals, features=self.X_test, show=False)
+                                         shap_values=shap_vals, features=X_test_plot, show=False)
                 else:
                     shap.dependence_plot(specific_var, interaction_index=interaction_var,
-                                         shap_values=shap_vals, features=self.X_test, show=False)
+                                         shap_values=shap_vals, features=X_test_plot, show=False)
                 plt.tight_layout()
                 plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
                                          str(self.class_) + 'shap_interaction_summary_{}.png'.format(specific_var)))
                 plt.show()
                 plt.close()
+
+        # visualize the training set predictions
+        f = os.path.join(self.output_dir,
+                         self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + 'shap_forceplot_{}.html'.format(class_ind))
+
+        if self.type_ == 'cls':
+            shap.save_html(f, shap.force_plot(explainer.expected_value[class_ind],
+                                                 shap_vals[class_ind], X_test_plot, show=False))
+        elif self.type_ == 'reg':
+            shap.save_html(f, shap.force_plot(explainer.expected_value, shap_vals,
+                                                 X_test_plot, show=False))
+        if interactions:
+            return self.shap_interaction_vals
+
 
     def unravel_report(self, report):
         new_d = {}
@@ -763,9 +845,41 @@ class RFShap(object):
                 d_all[key] = np.asarray([d_add[key]])
         return d_all
 
+    def find_categorial(self, df):
+        likely_cat = {}
+        for col in df.columns:
+            values = np.unique(df[col].values)
+            if ((np.round(values) - values).sum()) != 0:
+                likely_cat[col] = False
+            else:
+                likely_cat[col] = 1. * df[col].nunique() / df[col].count() < 0.05  # or some other threshold
+        return likely_cat
 
+    def imblearn_rep_to_df(self, re):
+        # from https://stackoverflow.com/questions/39662398/scikit-learn-output-metrics-classification-report-into-csv-tab-delimited-format
+        # users: kindjacket and vlad calin buzea
+        report_data = []
+        lines = re.split('\n')
+        for line in lines[2:-3]:
+            row = {}
+            row_data = line.split('      ')
+            row['class'] = row_data[1]
+            row['pre'] = float(row_data[2])
+            row['rec'] = float(row_data[3])
+            row['spe'] = float(row_data[4])
+            row['f1'] = float(row_data[5])
+            row['geo'] = float(row_data[6])
+            row['iba'] = float(row_data[7])
+            row['sup'] = float(row_data[8])
+            report_data.append(row)
+        return pd.DataFrame.from_dict(report_data)
 
-
-
-
-
+    def save_kfold_summary(self, re):
+        means = re.groupby(['class']).mean()
+        ses = re.groupby(['class']).std()/np.sqrt(self.k)
+        re.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                    '_k_fold_test_classification_report.csv'), index=False)
+        means.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                    '_k_fold_test_classification_report_mean.csv'), index=False)
+        ses.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                  '_k_fold_test_classification_report_se.csv'), index=False)

@@ -560,13 +560,13 @@ class RFShap(object):
         return self.model
 
 
-    def run_shap_explainer(self, modell):
+    def run_shap_explainer(self, model):
 
         """
-        :param modell: give it a trained model
+        :param model: give it a trained model
         :return: explainer and shapley values
         """
-        assert modell is not None, 'Feed me a model : ]'
+        assert model is not None, 'Feed me a model : ]'
 
         if self.k_cv == 'split':
             X_test = self.X_test
@@ -583,23 +583,23 @@ class RFShap(object):
         # note that the interventioanl option requires a 'background dataset'
 
         if self.class_ == 'RF':
-            explainer = shap.TreeExplainer(model=modell, model_output=model_output, feature_perturbation="tree_path_dependent")
+            explainer = shap.TreeExplainer(model=model, model_output=model_output, feature_perturbation="tree_path_dependent")
             shap_vals = explainer.shap_values(X_test)
 
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer.sav"))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer_shap_values.sav"))
         else:
-            explainer = shap.LinearExplainer(modell, X_test)
+            explainer = shap.LinearExplainer(model, X_test)
             shap_vals = explainer.shap_values(X_test)
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
         return explainer, shap_vals
 
-    def shap_bootstrap(self, modell=None, retrain=False, n_bootstraps=1000, n_samples=100, class_ind=0):
+    def shap_bootstrap(self, model=None, retrain=False, n_bootstraps=1000, n_samples=100, class_ind=0):
         """
 
-        :param modell: desired model  (if None then will use model that you trained earlier within this class)
+        :param model: desired model  (if None then will use model that you trained earlier within this class)
         :param retrain: this retrains the model for each bootstrap
         :param n_bootstraps: number of boostraps to undertake
         :param n_samples: sample size used in each bootstrap
@@ -609,8 +609,8 @@ class RFShap(object):
 
         assert n_samples < len(self.X_test), 'n_samples cannot be longer than the test set! Reduce n_samples.'
 
-        if modell == None:
-            modell = self.model
+        if model == None:
+            model = self.model
         shap_vals_bootstraps = []
 
         if self.k_cv == 'split':
@@ -624,20 +624,20 @@ class RFShap(object):
             if b % 20 == 0:
                 print('Bootstrap number: ', b)
             if retrain:
-                modell = self.make_model(self.config)
-                modell, _ = self.train_test(plot=False)
+                model = self.make_model(self.config)
+                model, _ = self.train_test(plot=False)
             sample_inds = np.random.choice(indices, n_samples)
             X_test_sample = X_test_bootstrap.iloc[sample_inds]
             if self.class_ == 'RF':
                 model_output = 'margin' if self.type_ == 'reg' else 'raw'
-                explainer = shap.TreeExplainer(model=modell, model_output=model_output, feature_perturbation="tree_path_dependent")
+                explainer = shap.TreeExplainer(model=model, model_output=model_output, feature_perturbation="tree_path_dependent")
                 shap_vals = explainer.shap_values(X_test_sample)
 
                 if self.type_ == 'cls':
                     shap_vals = shap_vals[class_ind]
 
             elif self.class_ == 'lin':
-                explainer = shap.LinearExplainer(modell, X_test_sample)
+                explainer = shap.LinearExplainer(model, X_test_sample)
                 shap_vals = explainer.shap_values(X_test_sample)
 
             shap_vals_bootstraps.append(shap_vals)
@@ -675,8 +675,9 @@ class RFShap(object):
         :return shap_interaction_vals: these are expensive to compute, so only want to do so once!
         """
         interaction_var = None
-        if len(interaction_vars) > 2:
-            raise Exception('Interaction vars list cannot be greater than 2.')
+        if interaction_vars is not None:
+            if len(interaction_vars) > 2:
+                raise Exception('Interaction vars list cannot be greater than 2.')
 
 
         def plot_interactions(data, expl=None, vars_=None, class_index=1):

@@ -212,8 +212,10 @@ class RFShap(object):
                                     '_simple_test_conf_mat.txt'), conf_mat)
             report = classification_report_imbalanced(self.y_test, preds)
             df_report = self.imblearn_rep_to_df(report)
+            df_report['mcc'] = metrics.matthews_corrcoef(self.y_test, preds)
             df_report.to_csv(os.path.join(self.output_dir,  str(self.type_) + '_' + str(self.class_) +
                                           '_simple_test_classification_report.csv'), index=False)
+            print(df_report)
 
         elif self.type_ == 'reg':
             expl_var = metrics.explained_variance_score(self.y_test, preds)
@@ -248,6 +250,7 @@ class RFShap(object):
                 tprs_2 = []
                 fprs = []
                 precisions = []
+                mccs = []
                 recalls = []
                 mean_fpr = np.linspace(0, 1, 100)
                 # report = {}
@@ -274,6 +277,7 @@ class RFShap(object):
                     results = pd.concat([results, rep])
 
                     if self.n_categories <= 2:
+                        mccs.append(metrics.matthews_corrcoef(y_test, preds))
                         fpr, tpr, _ = metrics.roc_curve(y_test, probs[:, 0])
                         tprs_2.append(tpr)
                         fprs.append(fpr)
@@ -315,19 +319,28 @@ class RFShap(object):
                         plt.show()
                     plt.close()
 
-                    recalls = np.asarray(recalls)
-                    precisions = np.asarray(precisions)
-                    tprs = np.asarray(tprs)
-                    tprs_2 = np.asarray(tprs_2)
-                    fprs = np.asarray(fprs)
-                    aucs = np.asarray(aucs)
-
-                test_accs = np.asarray(test_accs)
+                #     recalls = np.asarray(recalls)
+                #     precisions = np.asarray(precisions)
+                #     tprs = np.asarray(tprs)
+                #     tprs_2 = np.asarray(tprs_2)
+                #     fprs = np.asarray(fprs)
+                #     aucs = np.asarray(aucs)
+                #     mccs = np.asarray(mccs)
+                #
+                # test_accs = np.asarray(test_accs)
 
                 print(results)
+
+                if self.n_categories <= 2:
+                    mccs = pd.DataFrame(mccs)
+                    print('Matthews Correlation Coefficients: ', mccs)
+                    mccs = mccs.append(mccs.mean(), ignore_index=True)
+                    mccs = mccs.append(mccs.std()/np.sqrt(self.k), ignore_index=True)
+                    print('Last two rows of mccs_k_fold.csv are MEAN and Standard Err. respectively!')
+                    mccs.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                                  '_mccs_k_fold.csv'), index=False)
                 # results = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in report.items()]))
                 self.save_kfold_summary(results)
-
 
 
             elif self.k_cv == 'loo_cv':
@@ -353,12 +366,15 @@ class RFShap(object):
                 y_probs = np.asarray(y_probs)
                 y_preds = np.asarray(y_preds)
                 test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
+                mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
                 conf_mat = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
                 np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
                 results = classification_report_imbalanced(y_GTs, y_preds)
                 results = self.imblearn_rep_to_df(results)
+                results['mcc'] = mcc
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
                                               '_loocv_test_classification_report.csv'), index=False)
+                print(results)
 
 
         elif self.type_ == 'reg':

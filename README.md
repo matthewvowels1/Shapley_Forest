@@ -49,7 +49,7 @@ allow you to set the number of folds.
 od = '/home/matthewvowels/GitHub/Psych_ML/Shapley_Forest/output'
 shap_env = RFShap(model_dir=None, exclude_vars=['gay', 'lesbian'], outcome_var='age',
                   output_dir=od, random_seed=42, class_='RF',type_='reg', balanced='balanced', trn_tst_split=0.6,
-                    k_cv='split', k=5)
+                    k_cv='k_fold', k=5)
 ```
 
 
@@ -116,7 +116,7 @@ shap_env.train_test(plot=False)
 ```
 
 If we have `k_cv = 'k_fold'` or `'loo_cv'` then they will be used here. `plot` argument refers to k-fold training and the
-creation of a per-fold auroc plotting feature.
+creation of a per-fold auroc plotting feature for binary outcomes.
 
 TODO: make plotting feature conditional on whether outcome is binary or categorical.
 
@@ -165,7 +165,9 @@ tunable_params_linreg = ['normalize', 'fit_intercept']
 tunable_params_logreg = ['penalty', 'dual', 'tol', 'C', 'fit_intercept', 'solver', 'max_iter']
 ```
 
-If you specify a hyperparameter that cannot be trained, an error will be flagged and it will be ignored.
+If you specify a hyperparameter that cannot be trained, an error will be flagged and it will be ignored. Be mindful about
+overlap between train, test, and validation data when using e.g. k-fold/loo_cv options. It may be a good idea to undertake
+hyperparameter tuning on a completely separate test dataset, rather than risk contamiation.
 
 
 ## 6. Training the tuned model and running Shapley stuff
@@ -173,9 +175,12 @@ If you specify a hyperparameter that cannot be trained, an error will be flagged
 Train model with above hyperparams, and run shapley stuff:
 
 ```python
+specific_var = None
+interaction_vars = ['var1', 'var2']
 tuned_model, report = shap_env.train_test()
-explainer, shap_vals = shap_env.run_shap_explainer(modell=tuned_model)
-shap_env.shap_plot(shap_vals=shap_vals, specific_var='mtf', interaction_var='ftm', classwise=True, class_ind=1)
+explainer, shap_vals = shap_env.run_shap_explainer(model=tuned_model)
+interaction_vals = shap_env.shap_plot(explainer=explainer, shap_vals=shap_vals, specific_var=specific_var,
+     interactions=True, interaction_vars=interaction_vars, classwise=True, class_ind=1, num_display=num_disp_1)           
 ```
 
 `classwise` is for the importances plot when using RFs - it splits the importances for each class. 
@@ -196,13 +201,6 @@ computationally expensive, particularly when you have `shap_env.k_cv = 'loo_cv'`
 want to retrain, to have `shap_env.k_cv = 'split'`
 
 The output provides means and standard errors, as well as the full list of shap_vals over all bootstraps.
-
-
-
-
-
-
-
 
 
 

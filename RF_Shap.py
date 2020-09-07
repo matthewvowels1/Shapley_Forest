@@ -610,6 +610,13 @@ class RFShap(object):
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
+        inds = np.flip(np.argsort(np.abs(shap_vals).mean(0)))
+        sorted_vals = np.abs(shap_vals).mean(0)[(inds)]
+        imps = pd.DataFrame(sorted_vals).T
+        imps.columns = self.dataset.columns[inds]
+        ims_dir = os.path.join(self.output_dir, self.outcome_var + '_importances.csv')
+        imps.to_csv(ims_dir, index=False)
+
         return explainer, shap_vals
 
     def shap_bootstrap(self, model=None, retrain=False, n_bootstraps=1000, n_samples=100, class_ind=0):

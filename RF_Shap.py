@@ -613,7 +613,7 @@ class RFShap(object):
         inds = np.flip(np.argsort(np.abs(shap_vals).mean(0)))
         sorted_vals = np.abs(shap_vals).mean(0)[(inds)]
         imps = pd.DataFrame(sorted_vals).T
-        imps.columns = self.dataset.columns[inds]
+        imps.columns = self.X.columns[inds]
         ims_dir = os.path.join(self.output_dir, self.outcome_var + '_importances.csv')
         imps.to_csv(ims_dir, index=False)
 

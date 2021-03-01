@@ -67,6 +67,7 @@ The following models are used:
 `class_ = 'lin', type_ = 'reg'` : sklearn.linear_model.LinearRegression
 
 The balancing either calls imblearns RF, or enables class weight balancing for logistic regression.
+Balancing also switches on StratifiedKFold (balanced kfold) for categorical problems.
 
 ## 2. Feed the Class some data.
 Once the class has been initialized up, we can feed it a DataFrame. Note that the variable names you used when initializing

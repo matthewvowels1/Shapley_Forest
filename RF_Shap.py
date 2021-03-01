@@ -5,6 +5,7 @@ import numpy as np
 from sklearn import metrics
 import alibi
 from alibi.explainers import TreeShap
+from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
@@ -13,7 +14,7 @@ from imblearn.ensemble import BalancedRandomForestClassifier
 from imblearn.metrics import classification_report_imbalanced
 from scipy.stats import sem
 import matplotlib.pyplot as plt
-from sklearn.model_selection import KFold, train_test_split, RandomizedSearchCV, LeaveOneOut
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split, RandomizedSearchCV, LeaveOneOut
 import joblib
 from itertools import  zip_longest
 from functools import partial
@@ -163,6 +164,10 @@ class RFShap(object):
                 elif self.balanced == None:
                     self.model = LogisticRegression(**config) if config != None else LogisticRegression()
                     self.model.class_weight = None
+        elif self.class_ == 'svm':
+            assert self.type_ == 'cls', print('If using SVM, make sure you have a classification problem. i.e. set type_="cls"')
+            self.model = SVC(**config) if config != None else SVC(kernel='rbf', class_weight='balanced')
+
         print('Created: ', self.model)
         return self.model
 
@@ -243,7 +248,10 @@ class RFShap(object):
 
         if self.type_ == 'cls':
             if self.k_cv == 'k_fold':
-                kf = KFold(n_splits=self.k, random_state=self.seed)
+                if self.balanced:
+                    kf = StratifiedKFold(n_splits=self.k, random_state=self.seed)
+                else:
+                    kf = KFold(n_splits=self.k, random_state=self.seed)
                 test_accs = []
                 tprs = []
                 aucs = []
@@ -259,7 +267,8 @@ class RFShap(object):
                 f = 0
                 if self.n_categories <= 2:
                     fig, ax = plt.subplots(figsize=(14, 7))
-                for train_index, test_index in kf.split(self.X):
+                kf_ = kf.split(self.X, self.y) if self.balanced else kf.split(self.X)
+                for train_index, test_index in kf_:
                     f += 1
                     print('Training fold: ', f)
                     X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
@@ -467,6 +476,8 @@ class RFShap(object):
         """
         print('Tuning the following parameters: ', tunable_params)
 
+        assert self.class_ != 'svm', print('tuning not implemented for SVM yet')
+
         assert self.k_cv == 'split',\
             'k_cv must be set to "split" to allow hyperparameter tuning with a designated training set!'
 
@@ -604,7 +615,7 @@ class RFShap(object):
 
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer.sav"))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer_shap_values.sav"))
-        else:
+        elif self.class_ == 'lin':
             explainer = shap.LinearExplainer(model, X_test)
             shap_vals = explainer.shap_values(X_test)
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
@@ -662,6 +673,8 @@ class RFShap(object):
             elif self.class_ == 'lin':
                 explainer = shap.LinearExplainer(model, X_test_sample)
                 shap_vals = explainer.shap_values(X_test_sample)
+            elif self.class_ == 'svm':
+                print('Not implemented bootstrapped shap with svm yet')
 
             shap_vals_bootstraps.append(shap_vals)
 
@@ -763,12 +776,15 @@ class RFShap(object):
                 plt.show()
                 plt.close()
 
+
             if self.class_ == 'RF':
                 shap.summary_plot(shap_values=shap_vals[class_ind], features=X_test_plot, max_display=num_display, plot_type='dot',
                               show=False)
-            else:
+            elif self.class_ == 'lin':
                 shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='dot',
                               show=False)
+            elif self.class_ == 'svm':
+                print('not implemented shap for svm yet')
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
                                      str(self.class_) + '_' + str(class_ind) + '_' + str(num_display) +'_shap_effects_summary.png'))

@@ -611,13 +611,13 @@ class RFShap(object):
 
         if self.class_ == 'RF':
             explainer = shap.TreeExplainer(model=model, model_output=model_output, feature_perturbation="tree_path_dependent", check_additivity=check_additivity)
-            shap_vals = explainer.shap_values(X_test)
+            shap_vals = explainer.shap_values(X_test, check_additivity=check_additivity)
 
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer.sav"))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer_shap_values.sav"))
         elif self.class_ == 'lin':
             explainer = shap.LinearExplainer(model, X_test, check_additivity=check_additivity)
-            shap_vals = explainer.shap_values(X_test)
+            shap_vals = explainer.shap_values(X_test, check_additivity=check_additivity)
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 

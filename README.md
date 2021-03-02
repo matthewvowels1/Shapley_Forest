@@ -208,7 +208,7 @@ The output provides means and standard errors, as well as the full list of shap_
 ```python
 explainer, shap_vals, imps = shap_env.run_shap_explainer(model=model, check_additivity=False)
 shap_vals = np.asarray(shap_vals)
-shap_vals_ = shap_vals.mean(1)  # takes av importances across test points yielding [n_classes, n_predictors]
+shap_vals_ = np.abs(shap_vals).mean(1)  # takes av importances across test points yielding [n_classes, n_predictors]
 inds = np.flip(np.argsort(np.abs(shap_vals_)), 1)  # indices with same shape as shap_vals_
 sorted_vals = np.array(list(map(lambda x, y: y[x], inds, np.abs(shap_vals_))))  # broadcasts index array
 print(sorted_vals.shape)

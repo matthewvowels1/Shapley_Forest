@@ -12,6 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import LinearRegression
 from imblearn.ensemble import BalancedRandomForestClassifier
 from imblearn.metrics import classification_report_imbalanced
+from sklearn.metrics import roc_auc_score
 from scipy.stats import sem
 import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split, RandomizedSearchCV, LeaveOneOut
@@ -166,7 +167,7 @@ class RFShap(object):
                     self.model.class_weight = None
         elif self.class_ == 'svm':
             assert self.type_ == 'cls', print('If using SVM, make sure you have a classification problem. i.e. set type_="cls"')
-            self.model = SVC(**config) if config != None else SVC(kernel='rbf', class_weight='balanced')
+            self.model = SVC(**config) if config != None else SVC(kernel='rbf')
 
         print('Created: ', self.model)
         return self.model
@@ -193,12 +194,12 @@ class RFShap(object):
         assert self.model != None, 'model cannot be NoneType! Make sure it has been defined.'
         report = None
         if self.k_cv == 'k_fold' or self.k_cv == 'loo_cv':
-            report = self._train_eval_kloo(plot=plot)
+            report, conf_mat = self._train_eval_kloo(plot=plot)
 
         elif self.k_cv == 'split':
             self.model.fit(self.X_train, self.y_train.values.ravel())
-            report = self._eval_split()
-        return self.model, report
+            report, conf_mat = self._eval_split()
+        return self.model, report, conf_mat
 
     def _eval_split(self):
 
@@ -256,8 +257,10 @@ class RFShap(object):
                 tprs = []
                 aucs = []
                 tprs_2 = []
+                cms = []
                 fprs = []
                 precisions = []
+                rocaucscores = []
                 mccs = []
                 recalls = []
                 mean_fpr = np.linspace(0, 1, 100)
@@ -281,9 +284,13 @@ class RFShap(object):
                     rep = classification_report_imbalanced(y_test, preds)
                     # rep = self.unravel_report(rep)
                     # report = self.combine_dicts(report, rep)
+                    print(probs.shape)
+                    rocaucscores.append(roc_auc_score(y_test, probs, average='macro', multi_class='ovr'))
                     rep = self.imblearn_rep_to_df(rep)
                     rep['fold'] = f
                     results = pd.concat([results, rep])
+                    cms.append(metrics.confusion_matrix(y_test, preds))
+
 
                     if self.n_categories <= 2:
                         mccs.append(metrics.matthews_corrcoef(y_test, preds))
@@ -300,6 +307,7 @@ class RFShap(object):
                         tprs.append(interp_tpr)
                         aucs.append(viz.roc_auc)
                     i += 1
+
 
                 if self.n_categories <= 2:
                     ax.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r',
@@ -328,17 +336,10 @@ class RFShap(object):
                         plt.show()
                     plt.close()
 
-                #     recalls = np.asarray(recalls)
-                #     precisions = np.asarray(precisions)
-                #     tprs = np.asarray(tprs)
-                #     tprs_2 = np.asarray(tprs_2)
-                #     fprs = np.asarray(fprs)
-                #     aucs = np.asarray(aucs)
-                #     mccs = np.asarray(mccs)
-                #
-                # test_accs = np.asarray(test_accs)
-
+                print('accuracies', np.asarray(test_accs).mean())
+                print('roc score', np.asarray(rocaucscores).mean())
                 print(results)
+
 
                 if self.n_categories <= 2:
                     mccs = pd.DataFrame(mccs)
@@ -350,9 +351,12 @@ class RFShap(object):
                                                   '_mccs_k_fold.csv'), index=False)
                 # results = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in report.items()]))
                 self.save_kfold_summary(results)
+                cms = np.asarray(cms).sum(0)
 
 
-            elif self.k_cv == 'loo_cv':
+
+
+        elif self.k_cv == 'loo_cv':
                 kf = LeaveOneOut()
                 y_probs = []
                 y_preds = []
@@ -376,17 +380,21 @@ class RFShap(object):
                 y_preds = np.asarray(y_preds)
                 test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
                 mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
-                conf_mat = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
+                cms = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
                 np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
                 results = classification_report_imbalanced(y_GTs, y_preds)
+                rocaucscore = roc_auc_score(y_GTs, y_probs, average='macro', multi_class='ovr')
                 results = self.imblearn_rep_to_df(results)
                 results['mcc'] = mcc
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
                                               '_loocv_test_classification_report.csv'), index=False)
                 print(results)
+                print('accuracies', test_accs)
+                print('roc auc score', rocaucscore)
 
 
         elif self.type_ == 'reg':
+            cms = None
             if self.k_cv == 'k_fold':
                 kf = KFold(n_splits=self.k, random_state=self.seed)
                 expl_vars = []
@@ -464,7 +472,7 @@ class RFShap(object):
                 results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
                                             '_loocv_test_regression_report.csv'), index=False)
 
-        return results
+        return results, cms
 
 
     def tune_model(self, tunable_params=None, folds=3, n_iter=100):

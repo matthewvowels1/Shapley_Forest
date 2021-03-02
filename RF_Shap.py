@@ -381,7 +381,7 @@ class RFShap(object):
                 test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
                 mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
                 cms = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
-                np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), conf_mat)
+                np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'))
                 results = classification_report_imbalanced(y_GTs, y_preds)
                 rocaucscore = roc_auc_score(y_GTs, y_probs, average='macro', multi_class='ovr')
                 results = self.imblearn_rep_to_df(results)
@@ -629,12 +629,6 @@ class RFShap(object):
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
-        inds = np.flip(np.argsort(np.abs(shap_vals).mean(0)))
-        sorted_vals = np.abs(shap_vals).mean(0)[(inds)]
-        imps = pd.DataFrame(sorted_vals).T
-        imps.columns = self.X.columns[inds]
-        ims_dir = os.path.join(self.output_dir, self.outcome_var + '_importances.csv')
-        imps.to_csv(ims_dir, index=False)
 
         return explainer, shap_vals
 

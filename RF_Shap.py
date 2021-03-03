@@ -608,7 +608,7 @@ class RFShap(object):
         elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
             X_test = self.X
 
-        model_output = 'margin' if self.type_ == 'reg' else 'raw'
+        model_output = 'margin' if self.type_ == 'reg' else 'raw'   # if using RF classifier, raw is log odds
         print('Running Shap Explainer.')
         explainer = shap_vals = None
 

@@ -263,3 +263,29 @@ https://deep-and-shallow.com/2019/11/24/interpretability-cracking-open-the-black
 https://github.com/manujosephv/interpretability_blog/blob/master/census_income_interpretability.ipynb
 
 https://github.com/slundberg/shap
+
+
+## P.S.
+One can interrogate the differences in predictions by running this code (source: https://github.com/slundberg/shap/issues/137)
+```python
+import shap
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+
+X_train,X_test,Y_train,Y_test = train_test_split(*shap.datasets.adult(), test_size=0.2, random_state=0)
+clf = RandomForestClassifier(random_state=0, n_estimators=30)
+clf.fit(X_train, Y_train)
+predicted = clf.predict_proba(X_test)
+shap_values = shap.TreeExplainer(clf).shap_values(X_test)
+
+#looking for cases where the sum of the shap values strongly disagrees with the Random Forest predictions.
+for i in range(len(predicted)):
+    shap_sums = np.round([shap_values[j][i].sum() for j in range(len(shap_values))], decimals=2)
+    max_diff = np.round(np.max(np.abs(shap_sums - predicted[i])), decimals=2)
+    if abs(max_diff) > 0.2:
+        print("Data index: " + str(i), "Maximum difference: " + str(max_diff),\
+              "Forest predictions: " + str(predicted[i]), "Shap value sums: " + str(shap_sums))
+```
+
+Notice that the shap sums are symmetric, this is because they are log odds s.t. log(p1/p2) = - log(p2/p1)

@@ -603,10 +603,8 @@ class RFShap(object):
         """
         assert model is not None, 'Feed me a model : ]'
 
-        if self.k_cv == 'split':
-            X_test = self.X_test
-        elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
-            X_test = self.X
+
+        X_test = self.X_test
 
         model_output = 'margin' if self.type_ == 'reg' else 'raw'   # if using RF classifier, raw is log odds
         print('Running Shap Explainer.')

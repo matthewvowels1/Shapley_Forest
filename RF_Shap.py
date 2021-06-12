@@ -199,7 +199,7 @@ class RFShap(object):
         elif self.k_cv == 'split':
             self.model.fit(self.X_train, self.y_train.values.ravel())
             report, conf_mat = self._eval_split()
-        return self.model, report, conf_mat
+        return self.model, report
 
     def _eval_split(self):
 
@@ -356,41 +356,41 @@ class RFShap(object):
 
 
 
-        elif self.k_cv == 'loo_cv':
-                kf = LeaveOneOut()
-                y_probs = []
-                y_preds = []
-                y_GTs = []
-                i = 0
-                for train_index, test_index in kf.split(self.X):
-                    i += 1
-                    print('Loo-cv split number: ', i)
-                    X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
-                    y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
-                    self.model = self.make_model(self.config)
-                    self.model.fit(X_train, y_train.values.ravel())
-                    pred = self.model.predict(X_test)
-                    prob = self.model.predict_proba(X_test)
-                    y_preds.append(pred)
-                    y_probs.append(prob)
-                    y_GTs.append(y_test.values[0])
+            elif self.k_cv == 'loo_cv':
+                    kf = LeaveOneOut()
+                    y_probs = []
+                    y_preds = []
+                    y_GTs = []
+                    i = 0
+                    for train_index, test_index in kf.split(self.X):
+                        i += 1
+                        print('Loo-cv split number: ', i)
+                        X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
+                        y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+                        self.model = self.make_model(self.config)
+                        self.model.fit(X_train, y_train.values.ravel())
+                        pred = self.model.predict(X_test)
+                        prob = self.model.predict_proba(X_test)
+                        y_preds.append(pred)
+                        y_probs.append(prob)
+                        y_GTs.append(y_test.values[0])
 
-                y_GTs = np.asarray(y_GTs)
-                y_probs = np.asarray(y_probs)
-                y_preds = np.asarray(y_preds)
-                test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
-                mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
-                cms = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
-                np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'))
-                results = classification_report_imbalanced(y_GTs, y_preds)
-                rocaucscore = roc_auc_score(y_GTs, y_probs, average='macro', multi_class='ovr')
-                results = self.imblearn_rep_to_df(results)
-                results['mcc'] = mcc
-                results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
-                                              '_loocv_test_classification_report.csv'), index=False)
-                print(results)
-                print('accuracies', test_accs)
-                print('roc auc score', rocaucscore)
+                    y_GTs = np.asarray(y_GTs)
+                    y_probs = np.asarray(y_probs)
+                    y_preds = np.asarray(y_preds)
+                    test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
+                    mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
+                    cms = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
+                    np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'))
+                    results = classification_report_imbalanced(y_GTs, y_preds)
+                    rocaucscore = roc_auc_score(y_GTs, y_probs, average='macro', multi_class='ovr')
+                    results = self.imblearn_rep_to_df(results)
+                    results['mcc'] = mcc
+                    results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                                  '_loocv_test_classification_report.csv'), index=False)
+                    print(results)
+                    print('accuracies', test_accs)
+                    print('roc auc score', rocaucscore)
 
 
         elif self.type_ == 'reg':

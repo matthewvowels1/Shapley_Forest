@@ -604,7 +604,7 @@ class RFShap(object):
         assert model is not None, 'Feed me a model : ]'
 
 
-        X_test = self.X_test
+        X_test = self.X
 
         model_output = 'margin' if self.type_ == 'reg' else 'raw'   # if using RF classifier, raw is log odds
         print('Running Shap Explainer.')
@@ -654,7 +654,7 @@ class RFShap(object):
         shap_vals_bootstraps = []
 
         if self.k_cv == 'split':
-            X_test_bootstrap = self.X_test
+            X_test_bootstrap = self.X
         elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
             X_test_bootstrap = self.X
         indices = np.arange(0, len(X_test_bootstrap))
@@ -757,7 +757,7 @@ class RFShap(object):
                 plt.close()
 
         if self.k_cv == 'split':
-            X_test_plot = self.X_test
+            X_test_plot = self.X
         elif self.k_cv == 'loo_cv' or self.k_cv == 'k_fold':
             X_test_plot = self.X
 

@@ -15,10 +15,13 @@ from imblearn.metrics import classification_report_imbalanced
 from sklearn.metrics import roc_auc_score
 from scipy.stats import sem
 import matplotlib.pyplot as plt
-from sklearn.model_selection import KFold, StratifiedKFold, train_test_split, RandomizedSearchCV, LeaveOneOut
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split, RandomizedSearchCV, LeaveOneOut, cross_val_score
 import joblib
 from itertools import  zip_longest
 from functools import partial
+import optuna
+
+# todo: make tuning available for random forest
 
 EPS = 1e-3
 # some material taken from
@@ -26,7 +29,8 @@ EPS = 1e-3
 
 class RFShap(object):
     def __init__(self, model_dir=None, exclude_vars=None, outcome_var=None, output_dir=None, random_seed=42,
-                 class_='RF', type_='reg', balanced='balanced', trn_tst_split=0.6, k_cv='loo_cv', k=5):
+                 class_='RF', type_='reg', balanced='balanced', trn_tst_split=0.6, k_cv='loo_cv', k=5,
+                 tuning=False, config=None, num_trials=15):
 
         """
         :param model_dir: this is for pre_trained model loading
@@ -39,6 +43,9 @@ class RFShap(object):
         :param balanced:  either 'balanced' or 'unbalanced' for imblearn or sklearn respectively
         :param k_cv: uses k_fold training across entire dataset (but does not allow hyperparam tuning).
         :param k: if k_cv='loo_cv', 'split', 'k_fold'
+        :param tuning: if true then use nested cross-validation and tune on FIRST fold (only works with kfold)
+        :param config: specifies settings for the classifiers/random forests (otherwise will use defaults)
+        Config can be used to specify a list of hyperparameters (for tuning purposes)
         """
         assert class_ in ['RF', 'lin'], 'Class not recognised - choose reg or lin.'
         assert type_ in ['reg', 'cls'], 'Type not recognised - choose reg or cls.'
@@ -57,6 +64,7 @@ class RFShap(object):
         self.trn_tst_split = trn_tst_split
         self.k_cv = k_cv
         self.k = k
+        self.tuning = tuning
         self.dataset = None
         self.model = None
         self.cat_list = None
@@ -66,13 +74,21 @@ class RFShap(object):
         self.y_test = None
         self.X_train = None
         self.y_train = None
+        self.best_params = None  # this will be populated if tuning=True and using k-fold after the first fold is done
+        self. num_trials = num_trials  # number of trials for hyperparameter tuning (if applicable)
         # TODO: set up config as empty dict i.e. config = {} to avoid needing conditional statements in make_model()
-        self.config = None
+        self.config = config
         self.n_categories = None
         self.shap_interaction_vals = None
 
         if self.model_dir is not None:
             self.model = self.load_model(model_dir_=self.model_dir)
+
+        if self.tuning and self.k_cv != 'k_fold':
+            print('tuning=True will be ignored because it is only applicable under k-fold training.')
+
+        if self.tuning and self.k_cv != 'k_fold':
+            print('tuning=True is only available for random forest - make sure this is what you want!')
 
     def munch(self, dataset):
         """
@@ -246,6 +262,16 @@ class RFShap(object):
     def _train_eval_kloo(self, plot=False):
         # adapted from https://scikit-learn.org/
 
+        def objective(trial):
+            n_estimators = trial.suggest_int("n_estimators", 10, 1000)
+            max_depth = trial.suggest_int("max_depth", 2, 500, log=True)
+            trial_config = {'n_estimators': n_estimators, 'max_depth': max_depth}
+            self.model = self.make_model(trial_config)
+
+            # Step 3: Scoring method:
+            score = cross_val_score(self.model, X_train, y_train, n_jobs=-1, cv=self.k)
+            accuracy = score.mean()
+            return accuracy
 
         if self.type_ == 'cls':
             if self.k_cv == 'k_fold':
@@ -276,6 +302,13 @@ class RFShap(object):
                     print('Training fold: ', f)
                     X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
                     y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+
+                    if f == 1 and self.tuning:
+                        print('Running hyperparameter search')
+                        study = optuna.create_study(study_name='test')
+                        study.optimize(objective, n_trials=self. num_trials)
+                        self.config = study.best_trial.params
+                        print('best tuning params: ', self.config)
                     self.model = self.make_model(self.config)
                     self.model.fit(X_train, y_train.values.ravel())
                     preds = self.model.predict(X_test)
@@ -354,8 +387,6 @@ class RFShap(object):
                 cms = np.asarray(cms).sum(0)
 
 
-
-
             elif self.k_cv == 'loo_cv':
                     kf = LeaveOneOut()
                     y_probs = []
@@ -409,6 +440,13 @@ class RFShap(object):
                     print('Training fold: ', f)
                     X_train, X_test = self.X.iloc[train_index], self.X.iloc[test_index]
                     y_train, y_test = self.y.iloc[train_index], self.y.iloc[test_index]
+
+                    if f == 1 and self.tuning:
+                        print('Running hyperparameter search')
+                        study = optuna.create_study(study_name='test')
+                        study.optimize(objective, n_trials=self. num_trials)
+                        self.config = study.best_trial.params
+                        print('best tuning params: ', self.config)
                     self.model = self.make_model(self.config)
                     self.model.fit(X_train, y_train.values.ravel())
                     preds = self.model.predict(X_test)

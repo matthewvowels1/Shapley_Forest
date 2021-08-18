@@ -1,10 +1,9 @@
 import pandas as pd
 import os
+import gc
 import shap
 import numpy as np
 from sklearn import metrics
-import alibi
-from alibi.explainers import TreeShap
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
@@ -12,13 +11,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import LinearRegression
 from imblearn.ensemble import BalancedRandomForestClassifier
 from imblearn.metrics import classification_report_imbalanced
+from imblearn.over_sampling import RandomOverSampler
 from sklearn.metrics import roc_auc_score
 from scipy.stats import sem
 import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split, RandomizedSearchCV, LeaveOneOut, cross_val_score
 import joblib
-from itertools import  zip_longest
-from functools import partial
 import optuna
 
 # todo: make tuning available for random forest
@@ -26,6 +24,27 @@ import optuna
 EPS = 1e-3
 # some material taken from
 # github.com/manujosephv/interpretability_blog/blob/master/census_income_interpretability.ipynb
+
+class oversampled_Kfold():
+    def __init__(self, n_splits, random_state, n_repeats=1):
+        self.n_splits = n_splits
+        self.n_repeats = n_repeats
+        self.random_state = random_state
+
+    def split(self, X, y):
+        splits = np.array_split(np.random.choice(len(X), len(X),replace=False), self.n_splits)
+        train, test = [], []
+        for repeat in range(self.n_repeats):
+            for fold in range(len(splits)):
+                train_splits = splits[:]
+                test_splits = train_splits.pop(fold)
+                ros = RandomOverSampler(random_state=self.random_state)
+                train_idx = np.concatenate(train_splits)
+                Xidx_r, y_r = ros.fit_resample(train_idx.reshape(-1, 1), y.values[train_idx,0])
+                train.append(Xidx_r.flatten())
+                test.append(test_splits)
+        return list(zip(train, test))
+
 
 class RFShap(object):
     def __init__(self, model_dir=None, exclude_vars=None, outcome_var=None, output_dir=None, random_seed=42,
@@ -263,20 +282,21 @@ class RFShap(object):
         # adapted from https://scikit-learn.org/
 
         def objective(trial):
-            n_estimators = trial.suggest_int("n_estimators", 10, 1000)
-            max_depth = trial.suggest_int("max_depth", 2, 500, log=True)
+            self.model = None
+            n_estimators = trial.suggest_int("n_estimators", 50, 1000)
+            max_depth = trial.suggest_int("max_depth", 30, 600, log=True)
             trial_config = {'n_estimators': n_estimators, 'max_depth': max_depth}
             self.model = self.make_model(trial_config)
 
-            # Step 3: Scoring method:
-            score = cross_val_score(self.model, X_train, y_train, n_jobs=-1, cv=self.k)
-            accuracy = score.mean()
-            return accuracy
+            scoring = 'balanced_accuracy' if self.type_ == 'cls' else 'explained_variance'
+            score = cross_val_score(self.model, X_train, y_train.values.ravel(), n_jobs=3, cv=self.k, scoring=scoring)
+            score = score.mean()
+            return score
 
         if self.type_ == 'cls':
             if self.k_cv == 'k_fold':
                 if self.balanced:
-                    kf = StratifiedKFold(n_splits=self.k, random_state=self.seed)
+                    kf = oversampled_Kfold(n_splits=self.k, random_state=self.seed)
                 else:
                     kf = KFold(n_splits=self.k, random_state=self.seed)
                 test_accs = []
@@ -291,9 +311,15 @@ class RFShap(object):
                 recalls = []
                 mean_fpr = np.linspace(0, 1, 100)
                 # report = {}
+
+                y_probs = []
+                y_preds = []
+                y_GTs = []
+
                 results = pd.DataFrame()
                 i = 0
                 f = 0
+                study = optuna.create_study(study_name='test', direction='maximize')
                 if self.n_categories <= 2:
                     fig, ax = plt.subplots(figsize=(14, 7))
                 kf_ = kf.split(self.X, self.y) if self.balanced else kf.split(self.X)
@@ -305,25 +331,30 @@ class RFShap(object):
 
                     if f == 1 and self.tuning:
                         print('Running hyperparameter search')
-                        study = optuna.create_study(study_name='test')
-                        study.optimize(objective, n_trials=self. num_trials)
+                        study.optimize(objective, n_trials=self.num_trials, gc_after_trial=True)
                         self.config = study.best_trial.params
                         print('best tuning params: ', self.config)
                     self.model = self.make_model(self.config)
                     self.model.fit(X_train, y_train.values.ravel())
                     preds = self.model.predict(X_test)
                     probs = self.model.predict_proba(X_test)
+
+                    y_probs.append(probs)
+                    y_preds.append(preds)
+                    y_GTs.append(y_test)
+
                     test_accs.append(100 * metrics.accuracy_score(y_test, preds))
                     rep = classification_report_imbalanced(y_test, preds)
                     # rep = self.unravel_report(rep)
                     # report = self.combine_dicts(report, rep)
-                    print(probs.shape)
+                    if self.n_categories <= 2:
+                        probs_ = probs[:, 1]
+                    else:
+                        probs_ = probs
                     rocaucscores.append(roc_auc_score(y_test, probs, average='macro', multi_class='ovr'))
                     rep = self.imblearn_rep_to_df(rep)
                     rep['fold'] = f
                     results = pd.concat([results, rep])
-                    cms.append(metrics.confusion_matrix(y_test, preds))
-
 
                     if self.n_categories <= 2:
                         mccs.append(metrics.matthews_corrcoef(y_test, preds))
@@ -384,7 +415,12 @@ class RFShap(object):
                                                   '_mccs_k_fold.csv'), index=False)
                 # results = pd.DataFrame(dict([(k, pd.Series(v)) for k, v in report.items()]))
                 self.save_kfold_summary(results)
-                cms = np.asarray(cms).sum(0)
+
+                y_preds = np.concatenate(y_preds)
+                y_GTs = np.concatenate(y_GTs)
+                cms = metrics.confusion_matrix(y_GTs, y_preds, normalize=None)
+                np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(
+                    self.class_) + '_kcv_unnormalized_conf_mat.txt'), cms)
 
 
             elif self.k_cv == 'loo_cv':
@@ -412,7 +448,7 @@ class RFShap(object):
                     test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
                     mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
                     cms = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
-                    np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'))
+                    np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), cms)
                     results = classification_report_imbalanced(y_GTs, y_preds)
                     rocaucscore = roc_auc_score(y_GTs, y_probs, average='macro', multi_class='ovr')
                     results = self.imblearn_rep_to_df(results)
@@ -435,6 +471,7 @@ class RFShap(object):
                 r2s = []
                 med_aes = []
                 f = 0
+                study = optuna.create_study(study_name='test', direction='maximize')  # todo: check this is the right direction!
                 for train_index, test_index in kf.split(self.X):
                     f += 1
                     print('Training fold: ', f)
@@ -443,8 +480,7 @@ class RFShap(object):
 
                     if f == 1 and self.tuning:
                         print('Running hyperparameter search')
-                        study = optuna.create_study(study_name='test')
-                        study.optimize(objective, n_trials=self. num_trials)
+                        study.optimize(objective, n_trials=self.num_trials, gc_after_trial=True)
                         self.config = study.best_trial.params
                         print('best tuning params: ', self.config)
                     self.model = self.make_model(self.config)
@@ -623,7 +659,7 @@ class RFShap(object):
         random_grid.update(filtered)
         rf = self.make_model(config=None)
         rf_random = RandomizedSearchCV(estimator=rf, param_distributions=random_grid, n_iter=n_iter, cv=folds, verbose=2,
-                                       random_state=self.seed, n_jobs=-1)
+                                       random_state=self.seed, n_jobs=2)
         # Fit the random search model
         rf_random.fit(self.X_train, self.y_train)
         rf_params = rf_random.best_params_
@@ -665,8 +701,8 @@ class RFShap(object):
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
-        inds = np.flip(np.argsort(np.abs(shap_vals).mean(0)))
-        sorted_vals = np.abs(shap_vals).mean(0)[(inds)]
+        inds = np.flip(np.argsort(np.abs(shap_vals).mean(0).mean(0)))
+        sorted_vals = np.abs(shap_vals).mean(0).mean(0)[(inds)]
         imps = pd.DataFrame(sorted_vals).T
         imps.columns = self.X.columns[inds]
         ims_dir = os.path.join(self.output_dir, self.outcome_var + '_importances.csv')
@@ -744,7 +780,8 @@ class RFShap(object):
 
 
     def shap_plot(self, explainer=None, shap_vals=None, specific_var=None, interactions=False,
-                  interaction_vars=None, classwise=True, class_ind=1, num_display=20):
+                  interaction_vars=None, classwise=True, val_summary=False, force_plot=False,
+                  class_name=None, class_ind=1, num_display=20):
 
         """
         :param explainer: explainer
@@ -759,6 +796,8 @@ class RFShap(object):
             if len(interaction_vars) > 2:
                 raise Exception('Interaction vars list cannot be greater than 2.')
 
+        if class_name == None:
+            class_name = class_ind
 
         def plot_interactions(data, expl=None, vars_=None, class_index=1):
             if self.shap_interaction_vals is None:
@@ -802,23 +841,23 @@ class RFShap(object):
         if self.type_ == 'cls':
             if interactions:
                 plot_interactions(X_test_plot, explainer, interaction_vars, class_ind)
-
-            if classwise or (self.class_ == 'lin'):
-                shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='bar', show=False)
-                plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
-                plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                         str(self.class_) + '_' + str(num_display) +'_shap_val_summary.png'))
-                plt.show()
-                plt.close()
-            else:
-                shap.summary_plot(shap_values=shap_vals[class_ind], features=X_test_plot, max_display=num_display, plot_type='bar', show=False)
-                plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
-                plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
-                                         str(self.class_) + '_' + str(num_display) +'_shap_val_summary.png'))
-                plt.show()
-                plt.close()
+            if val_summary:
+                if classwise or (self.class_ == 'lin'):
+                    shap.summary_plot(shap_values=shap_vals, features=X_test_plot, max_display=num_display, plot_type='bar', show=False)
+                    plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
+                                             str(self.class_) + '_' + str(num_display) +'_shap_val_summary_{}.png'))
+                    plt.show()
+                    plt.close()
+                else:
+                    shap.summary_plot(shap_values=shap_vals[class_ind], features=X_test_plot, max_display=num_display, plot_type='bar', show=False)
+                    plt.xlabel('mean(|SHAP value|) (impact on output magnitude)')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' +
+                                             str(self.class_) + '_' + str(num_display) +'_shap_val_summary.png'))
+                    plt.show()
+                    plt.close()
 
 
             if self.class_ == 'RF':
@@ -831,7 +870,7 @@ class RFShap(object):
                 print('not implemented shap for svm yet')
             plt.tight_layout()
             plt.savefig(os.path.join(self.output_dir, self.outcome_var +'_' + str(self.type_) + '_' +
-                                     str(self.class_) + '_' + str(class_ind) + '_' + str(num_display) +'_shap_effects_summary.png'))
+                                     str(self.class_) + '_' + str(class_name) + '_' + str(num_display) +'_shap_effects_summary.png'))
             plt.show()
             plt.close()
 
@@ -891,12 +930,13 @@ class RFShap(object):
         f = os.path.join(self.output_dir,
                          self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + 'shap_forceplot_{}.html'.format(class_ind))
 
-        if self.type_ == 'cls':
-            shap.save_html(f, shap.force_plot(explainer.expected_value[class_ind],
-                                                 shap_vals[class_ind], X_test_plot, show=False))
-        elif self.type_ == 'reg':
-            shap.save_html(f, shap.force_plot(explainer.expected_value, shap_vals,
-                                                 X_test_plot, show=False))
+        if force_plot:
+            if self.type_ == 'cls':
+                shap.save_html(f, shap.force_plot(explainer.expected_value[class_ind],
+                                                     shap_vals[class_ind], X_test_plot, show=False))
+            elif self.type_ == 'reg':
+                shap.save_html(f, shap.force_plot(explainer.expected_value, shap_vals,
+                                                     X_test_plot, show=False))
         if interactions:
             return self.shap_interaction_vals
 

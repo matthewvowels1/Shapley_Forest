@@ -9,6 +9,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import balanced_accuracy_score
 from imblearn.ensemble import BalancedRandomForestClassifier
 from imblearn.metrics import classification_report_imbalanced
 from imblearn.over_sampling import RandomOverSampler
@@ -234,6 +235,10 @@ class RFShap(object):
         elif self.k_cv == 'split':
             self.model.fit(self.X_train, self.y_train.values.ravel())
             report, conf_mat = self._eval_split()
+
+
+        joblib.dump(self.model, os.path.join(self.output_dir,  str(self.type_) + '_' + str(self.class_) +
+                                          '_model.joblib'))
         return self.model, report
 
     def _eval_split(self):
@@ -421,6 +426,14 @@ class RFShap(object):
                 cms = metrics.confusion_matrix(y_GTs, y_preds, normalize=None)
                 np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(
                     self.class_) + '_kcv_unnormalized_conf_mat.txt'), cms)
+                bas_n = balanced_accuracy_score(y_GTs, y_preds, adjusted=True)
+                bas = balanced_accuracy_score(y_GTs, y_preds, adjusted=False)
+                print('balanced accuracy adjusted, unadjusted:', bas_n, bas)
+                bas_df = pd.DataFrame()
+                bas_df['adjusted_balanced_acc'] = np.array([bas_n])
+                bas_df['unadjusted_balanced_acc'] = np.array([bas])
+                bas_df.to_csv(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(
+                    self.class_) + 'kcv_balanced_acc_scores.csv'))
 
 
             elif self.k_cv == 'loo_cv':
@@ -445,17 +458,26 @@ class RFShap(object):
                     y_GTs = np.asarray(y_GTs)
                     y_probs = np.asarray(y_probs)
                     y_preds = np.asarray(y_preds)
+                    bas_n = balanced_accuracy_score(y_GTs, y_preds, adjusted=True)
+                    bas = balanced_accuracy_score(y_GTs, y_preds, adjusted=False)
                     test_accs = 100 * metrics.accuracy_score(y_GTs, y_preds)
-                    mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
+                    if self.n_categories <= 2:
+                        mcc = metrics.matthews_corrcoef(y_GTs, y_preds)
+                        results['mcc'] = np.array([mcc])
                     cms = np.asarray(metrics.confusion_matrix(y_GTs, y_preds))
                     np.savetxt(os.path.join(self.output_dir, self.outcome_var + '_' + str(self.type_) + '_' + str(self.class_) + '_loocv_train_test_conf_mat.txt'), cms)
                     results = classification_report_imbalanced(y_GTs, y_preds)
                     rocaucscore = roc_auc_score(y_GTs, y_probs, average='macro', multi_class='ovr')
                     results = self.imblearn_rep_to_df(results)
-                    results['mcc'] = mcc
+                    results_ba = pd.DataFrame()
+                    results_ba['adjusted_balanced_acc'] = np.array([bas_n])
+                    results_ba['unadjusted_balanced_acc'] =  np.array([bas])
                     results.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
                                                   '_loocv_test_classification_report.csv'), index=False)
+                    results_ba.to_csv(os.path.join(self.output_dir, str(self.type_) + '_' + str(self.class_) +
+                                        '_loocv_balanced_acc_scores.csv'), index=False)
                     print(results)
+                    print('balanced accuracy adjusted, unadjusted:', bas_n, bas)
                     print('accuracies', test_accs)
                     print('roc auc score', rocaucscore)
 
@@ -669,7 +691,7 @@ class RFShap(object):
         return self.model
 
 
-    def run_shap_explainer(self, model, check_additivity=True):
+    def run_shap_explainer(self, model, check_additivity=True, fraction_data=1.0):
 
         """
         :param model: give it a trained model
@@ -677,8 +699,9 @@ class RFShap(object):
         """
         assert model is not None, 'Feed me a model : ]'
 
-
-        X_test = self.X
+        print('Using ', fraction_data, ' of the data to run Shap.')
+        indexes = np.random.choice(np.arange(0, len(self.X)), len(self.X)*fraction_data)
+        X_test = self.X[indexes]
 
         model_output = 'margin' if self.type_ == 'reg' else 'raw'   # if using RF classifier, raw is log odds
         print('Running Shap Explainer.')
@@ -690,15 +713,18 @@ class RFShap(object):
         # note that the interventioanl option requires a 'background dataset'
 
         if self.class_ == 'RF':
+            print('Running Explainer')
             explainer = shap.TreeExplainer(model=model, model_output=model_output, feature_perturbation="tree_path_dependent", check_additivity=check_additivity)
-            shap_vals = explainer.shap_values(X_test, check_additivity=check_additivity)
-
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer.sav"))
+            print('Generating Shap values')
+            shap_vals = explainer.shap_values(X_test, check_additivity=check_additivity)
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + "_tree_explainer_shap_values.sav"))
         elif self.class_ == 'lin':
+            print('Running Explainer')
             explainer = shap.LinearExplainer(model, X_test, check_additivity=check_additivity)
-            shap_vals = explainer.shap_values(X_test, check_additivity=check_additivity)
             joblib.dump(explainer, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer.sav'))
+            print('Generating Shap values')
+            shap_vals = explainer.shap_values(X_test, check_additivity=check_additivity)
             joblib.dump(shap_vals, os.path.join(self.output_dir, self.outcome_var + '_linear_explainer_shap_values.sav'))
 
         inds = np.flip(np.argsort(np.abs(shap_vals).mean(0).mean(0)))

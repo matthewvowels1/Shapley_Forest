@@ -819,8 +819,8 @@ class RFShap(object):
         """
         interaction_var = None
         if interaction_vars is not None:
-	    if len(interaction_vars) == 0:
-	        raise Exception('If there are no interactions vars, specify None, not empty list []')
+            if len(interaction_vars) == 0:
+                raise Exception('If there are no interactions vars, specify None, not empty list []')
             if len(interaction_vars) > 2:
                 raise Exception('Interaction vars list cannot be greater than 2.')
 

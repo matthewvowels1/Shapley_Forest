@@ -699,9 +699,7 @@ class RFShap(object):
         """
         assert model is not None, 'Feed me a model : ]'
 
-        print('Using ', fraction_data, ' of the data to run Shap.')
-        indexes = np.random.choice(np.arange(0, len(self.X)), len(self.X)*fraction_data)
-        X_test = self.X[indexes]
+        X_test = self.X
 
         model_output = 'margin' if self.type_ == 'reg' else 'raw'   # if using RF classifier, raw is log odds
         print('Running Shap Explainer.')
